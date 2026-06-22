@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APIsec BOLT Local - Side Panel</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <header>
+        <h1>BOLT Local</h1>
+        <p>Single-pane API/Webapp audit.</p>
+      </header>
+
+      <div class="input-group">
+        <label for="targetUrl">Target base URL</label>
+        <input id="targetUrl" type="text" placeholder="https://api.example.com" />
+      </div>
+
+      <div class="input-group">
+        <label for="proxyUrl">Proxy template</label>
+        <input id="proxyUrl" type="text" placeholder="https://cors-anywhere.herokuapp.com/{url}" />
+      </div>
+
+      <div class="input-group">
+        <label>Quick checks</label>
+        <div class="checkboxes">
+          <label><input type="checkbox" id="chScanCurrent" /> Scan current tab</label>
+          <label><input type="checkbox" id="chScanAllTabs" /> Scan all open tabs</label>
+          <label><input type="checkbox" id="chRateLimit" checked /> Rate limit</label>
+          <label><input type="checkbox" id="chIdor" checked /> IDOR/BOLA</label>
+          <label><input type="checkbox" id="chSql" checked /> SQLi</label>
+          <label><input type="checkbox" id="chXss" checked /> XSS</label>
+          <label><input type="checkbox" id="chCsrf" checked /> CSRF</label>
+          <label><input type="checkbox" id="chSsrf" checked /> SSRF</label>
+          <label><input type="checkbox" id="chSecHeaders" checked /> Sec headers</label>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>AI integration</label>
+        <div class="checkboxes">
+          <label><input type="checkbox" id="chUseAi" /> Enable AI assistance</label>
+        </div>
+        <label for="aiMode">AI mode</label>
+        <select id="aiMode">
+          <option value="openai">OpenAI API</option>
+          <option value="local">Local endpoint (http://localhost:5000/llm)</option>
+        </select>
+        <label for="aiKey">OpenAI API key (secure)</label>
+        <input id="aiKey" type="password" placeholder="sk-... (optional if local)" />
+      </div>
+
+      <div class="controls">
+        <button id="scanButton" class="btn">Start Scan</button>
+        <button id="fromTabButton" class="btn secondary">Use current tab</button>
+        <button id="openSidePanel" class="btn secondary">Open Side Panel</button>
+      </div>
+
+      <div class="proxy-control">
+        <button id="allTrafficProxy" class="btn secondary">Enable global proxy</button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-target="resultPage">Scan</button>
+        <button class="tab-btn" data-target="discoveryPage">Discovery</button>
+        <button class="tab-btn" data-target="historyPage">History</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section id="resultPage" class="page active">
+        <div id="status">Idle.</div>
+        <section id="result" class="result"><p>Run a scan to view results.</p></section>
+      </section>
+
+      <section id="discoveryPage" class="page">
+        <h2>Discovered APIs</h2>
+        <p class="small-text">The extension captures browser traffic and stores candidate API URLs.</p>
+        <button id="refreshDiscovery" class="btn secondary">Refresh discovery list</button>
+        <ul id="discoveryList"></ul>
+      </section>
+
+      <section id="historyPage" class="page">
+        <h2>Scan History</h2>
+        <ul id="historyList"></ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

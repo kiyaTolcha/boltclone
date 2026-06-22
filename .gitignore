@@ -1,0 +1,30 @@
+# Node.js dependencies
+node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Environment variables
+.env
+.env.test
+.env.production
+
+# Build output
+dist/
+build/
+
+# Coverage reports
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db

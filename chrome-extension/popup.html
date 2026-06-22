@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APIsec BOLT Local</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <header>
+        <h1>BOLT Local</h1>
+        <p>Multi-page API/Webapp audit.</p>
+      </header>
+
+      <div class="tabs" id="pageTabs">
+        <button class="tab-btn active" data-target="capturePage">Capture</button>
+        <button class="tab-btn" data-target="discoveryPage">Discovery</button>
+        <button class="tab-btn" data-target="historyPage">History</button>
+      </div>
+
+      <div class="page-controls">
+        <div class="input-group">
+          <label for="targetUrl">Target base URL</label>
+          <input id="targetUrl" type="text" placeholder="https://api.example.com" />
+        </div>
+
+        <div class="input-group capture-mode">
+          <label>Capture mode</label>
+          <div class="mode-buttons">
+            <button id="modeApi" class="btn small active">Only base URL</button>
+            <button id="modeAll" class="btn small secondary">All browser traffic</button>
+          </div>
+        </div>
+
+        <div class="input-group">
+          <label for="proxyUrl">Proxy template</label>
+          <input id="proxyUrl" type="text" placeholder="https://cors-anywhere.herokuapp.com/{url}" />
+        </div>
+
+        <div class="controls">
+          <button id="scanButton" class="btn">Start Scan</button>
+          <button id="fromTabButton" class="btn secondary">Use current tab</button>
+          <button id="openSidePanel" class="btn secondary">Open Side Panel</button>
+        </div>
+
+        <div class="controls">
+          <button id="startBgScan" class="btn success">Start Background Scan</button>
+          <button id="stopBgScan" class="btn warning">Stop Background Scan</button>
+        </div>
+
+        <div class="controls">
+          <button id="exportAnalysis" class="btn secondary">Export Analysis JSON</button>
+          <button id="exportOpenApi" class="btn secondary">Export OpenAPI JSON</button>
+        </div>
+
+        <div class="status" id="status">Ready</div>
+
+        <div class="proxy-control">
+          <button id="allTrafficProxy" class="btn secondary">Enable global proxy</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section id="capturePage" class="page active">
+        <div id="result" class="result"><p>Run a scan to view results.</p></div>
+      </section>
+
+      <section id="discoveryPage" class="page">
+        <h2>Discovered APIs</h2>
+        <p class="small-text">The extension captures browser traffic and stores candidate API URLs.</p>
+        <button id="refreshDiscovery" class="btn secondary">Refresh discovery list</button>
+        <ul id="discoveryList"></ul>
+      </section>
+
+      <section id="historyPage" class="page">
+        <h2>History</h2>
+        <ul id="historyList"></ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,320 @@
+const DISCOVERED_API_KEY = 'discoveredApis';
+const MAX_DISCOVERED = 300;
+const STATS_KEY = 'boltcloneTraffic';
+
+// load logic modules in service worker environment (import() is disallowed there)
+importScripts('rules.js', 'openapi.js');
+
+let captureMode = 'api';
+
+function loadCaptureMode() {
+  chrome.storage.local.get({ boltcloneCaptureMode: 'api' }, ({ boltcloneCaptureMode }) => {
+    captureMode = boltcloneCaptureMode || 'api';
+    console.log('Background capture mode set:', captureMode);
+  });
+}
+
+function scheduleScan() {
+  console.log('Scheduling periodic scan alarm');
+  chrome.alarms.create('boltcloneScan', { delayInMinutes: 0.1, periodInMinutes: 0.25 });
+}
+
+function stopScheduledScan() {
+  console.log('Clearing periodic scan alarm');
+  chrome.alarms.clear('boltcloneScan');
+}
+
+function analyzeNow() {
+  try {
+    chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
+      const rawLog = boltcloneTraffic || [];
+      console.log('analyzeNow rawLog length:', rawLog.length);
+      if (rawLog.length > 0) {
+        console.debug('analyzeNow sample entry:', rawLog[0]);
+      }
+      const findings = typeof analyzeTraffic === 'function' ? analyzeTraffic(rawLog) : [];
+      console.log('analyzeNow findings count:', findings.length);
+      const safeFindings = findings.map((f) => ({
+        type: f.type,
+        severity: f.severity,
+        message: f.message,
+        url: f.entry?.url,
+        method: f.entry?.method,
+        statusCode: f.entry?.statusCode,
+        timestamp: f.entry?.timestamp
+      }));
+      chrome.storage.local.set({ boltcloneAnalysis: safeFindings });
+      console.log('Periodic analysis result', safeFindings);
+    });
+  } catch (e) {
+    console.error('Periodic analysis failed', e);
+  }
+}
+
+
+function isLikelyApiRequest(url) {
+  try {
+    const u = new URL(url);
+    const ext = u.pathname.split('.').pop().toLowerCase();
+    const staticExt = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'css', 'js', 'woff', 'woff2', 'ico', 'mp4', 'map'];
+    if (staticExt.includes(ext)) return false;
+
+    if (u.pathname.startsWith('/api') || u.pathname.endsWith('.json') || u.pathname.toLowerCase().includes('graphql')) {
+      return true;
+    }
+
+    if (u.pathname.split('/').length > 2 && u.pathname.includes('/api')) {
+      return true;
+    }
+
+    if (u.searchParams.toString().length > 0) {
+      return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function extractCandidate(url) {
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRequestBody(requestBody) {
+  if (!requestBody) return null;
+  const normalized = {};
+  if (requestBody.formData) {
+    normalized.formData = requestBody.formData;
+  }
+  if (requestBody.raw) {
+    // Convert raw typed arrays to safe text strings if possible
+    normalized.raw = requestBody.raw.map((item) => {
+      if (item.bytes instanceof ArrayBuffer || ArrayBuffer.isView(item.bytes)) {
+        try {
+          const bytes = item.bytes instanceof ArrayBuffer ? item.bytes : item.bytes.buffer;
+          return { text: new TextDecoder().decode(bytes) };
+        } catch (err) {
+          return { text: null };
+        }
+      }
+      return { text: null };
+    });
+  }
+  return normalized;
+}
+
+function saveTraffic(entry) {
+  if (entry.requestBody) {
+    entry.requestBody = normalizeRequestBody(entry.requestBody);
+  }
+
+  chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
+    const next = [entry, ...(boltcloneTraffic || [])].slice(0, 1000);
+    chrome.storage.local.set({ [STATS_KEY]: next }, () => {
+      console.debug('Saved traffic entry:', entry);
+      console.debug('Traffic storage length:', next.length);
+    });
+  });
+}
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (!details.url || details.method === 'OPTIONS') return;
+
+    const shouldCapture = captureMode === 'all' ? true : isLikelyApiRequest(details.url);
+    if (!shouldCapture) return;
+
+    const body = details.requestBody;
+
+    saveTraffic({
+      id: details.requestId,
+      type: 'request',
+      timestamp: new Date().toISOString(),
+      url: details.url,
+      method: details.method,
+      requestBody: body || null,
+      tabId: details.tabId
+    });
+
+    console.log('Captured request', details.url, 'method', details.method, 'mode', captureMode);
+  },
+  { urls: ['<all_urls>'] },
+  ['requestBody']
+);
+
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (!details.url || details.method === 'OPTIONS') return;
+
+    const shouldCapture = captureMode === 'all' ? true : isLikelyApiRequest(details.url);
+    if (!shouldCapture) return;
+
+    saveTraffic({
+      id: details.requestId,
+      type: 'response',
+      timestamp: new Date().toISOString(),
+      url: details.url,
+      method: details.method,
+      statusCode: details.statusCode,
+      responseHeaders: details.responseHeaders || [],
+      tabId: details.tabId
+    });
+
+    console.log('Captured response headers', details.url, 'status', details.statusCode);
+  },
+  { urls: ['<all_urls>'] },
+  ['responseHeaders']
+);
+
+chrome.runtime.onInstalled.addListener(async () => {
+  chrome.storage.local.set({ [DISCOVERED_API_KEY]: [] });
+  loadCaptureMode();
+
+  if (chrome.sidePanel?.setOptions) {
+    try {
+      await chrome.sidePanel.setOptions({ path: 'panel.html', enabled: true });
+      console.log('Side panel configured on install');
+    } catch (err) {
+      console.warn('Failed to set sidePanel options:', err);
+    }
+  }
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'boltcloneScan') {
+    analyzeNow();
+  }
+});
+
+chrome.webRequest.onCompleted.addListener(
+  async (details) => {
+    if (!details.url || details.method === 'OPTIONS') return;
+
+    const shouldCapture = captureMode === 'all' ? true : isLikelyApiRequest(details.url);
+    if (!shouldCapture) return;
+
+    const candidate = extractCandidate(details.url);
+    if (!candidate) return;
+
+    chrome.storage.local.get({ [DISCOVERED_API_KEY]: [] }, ({ discoveredApis }) => {
+      const normalized = candidate.replace(/\/?$/, '');
+      const existing = new Set(discoveredApis.map((item) => item.url));
+      if (!existing.has(normalized)) {
+        const next = [{ url: normalized, method: details.method, status: details.statusCode, timestamp: new Date().toISOString() }, ...discoveredApis].slice(0, MAX_DISCOVERED);
+        chrome.storage.local.set({ [DISCOVERED_API_KEY]: next });
+      }
+    });
+  },
+  { urls: ['<all_urls>'] }
+);
+
+chrome.action.onClicked?.addListener?.(async () => {
+  const sidePanelAvailable = !!chrome.sidePanel?.open;
+
+  if (chrome.sidePanel?.setOptions) {
+    try {
+      await chrome.sidePanel.setOptions({ path: 'panel.html', enabled: true });
+      console.log('sidePanel options set successfully.');
+    } catch (err) {
+      console.warn('sidePanel.setOptions failed:', err);
+    }
+  }
+
+  if (sidePanelAvailable) {
+    try {
+      await chrome.sidePanel.open({});
+      console.log('sidePanel opened successfully.');
+      return;
+    } catch (err) {
+      console.warn('sidePanel.open failed:', err);
+    }
+  }
+
+  // Fallback for browsers that don't support sidePanel (or if open fails): open panel.html in a tab
+  try {
+    const panelUrl = chrome.runtime.getURL('panel.html');
+    await chrome.tabs.create({ url: panelUrl });
+    console.log('Fallback tab opened:', panelUrl);
+  } catch (err) {
+    console.error('Failed to open fallback panel tab:', err);
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !message.type) return;
+
+  if (message.type === 'getDiscoveredApis') {
+    chrome.storage.local.get({ [DISCOVERED_API_KEY]: [] }, (data) => sendResponse({ discoveredApis: data[DISCOVERED_API_KEY] || [] }));
+    return true;
+  }
+
+  if (message.type === 'startScan') {
+    scheduleScan();
+    chrome.storage.local.set({ boltcloneScanState: 'running' });
+    analyzeNow();
+    sendResponse({ status: 'scheduled' });
+    return true;
+  }
+
+  if (message.type === 'stopScan') {
+    stopScheduledScan();
+    chrome.storage.local.set({ boltcloneScanState: 'stopped' });
+    sendResponse({ status: 'cancelled' });
+    return true;
+  }
+
+  if (message.type === 'getScanState') {
+    chrome.storage.local.get({ boltcloneScanState: 'stopped' }, ({ boltcloneScanState }) => {
+      sendResponse({ scanState: boltcloneScanState });
+    });
+    return true;
+  }
+
+  if (message.type === 'setCaptureMode') {
+    const mode = message.mode === 'all' ? 'all' : 'api';
+    captureMode = mode;
+    chrome.storage.local.set({ boltcloneCaptureMode: mode }, () => {
+      console.log('Capture mode updated to', mode);
+      sendResponse({ mode });
+    });
+    return true;
+  }
+
+  if (message.type === 'getCaptureMode') {
+    chrome.storage.local.get({ boltcloneCaptureMode: 'api' }, ({ boltcloneCaptureMode }) => {
+      sendResponse({ mode: boltcloneCaptureMode || 'api' });
+    });
+    return true;
+  }
+
+  if (message.type === 'getTraffic') {
+    chrome.storage.local.get({ [STATS_KEY]: [] }, (data) => sendResponse({ traffic: data[STATS_KEY] || [] }));
+    return true;
+  }
+
+  if (message.type === 'getAnalysis') {
+    chrome.storage.local.get({ boltcloneAnalysis: [] }, (data) => sendResponse({ analysis: data.boltcloneAnalysis || [] }));
+    return true;
+  }
+
+  if (message.type === 'exportSpec') {
+    try {
+      chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
+        const spec = typeof buildOpenApi === 'function' ? buildOpenApi(boltcloneTraffic || []) : { openapi: '3.0.0', info: { title: 'BOLTCLONE API Inventory', version: '1.0.0' }, paths: {} };
+        sendResponse({ spec });
+      });
+    } catch (err) {
+      sendResponse({ error: err?.message || String(err) });
+    }
+    return true;
+  }
+});
+
+// Initialize capture mode on startup
+loadCaptureMode();
