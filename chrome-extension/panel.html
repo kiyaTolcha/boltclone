@@ -3,91 +3,193 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>APIsec BOLT Local - Side Panel</title>
+  <title>BOLTCLONE</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="layout">
-    <aside class="sidebar">
-      <header>
-        <h1>BOLT Local</h1>
-        <p>Single-pane API/Webapp audit.</p>
-      </header>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="currentColor"/></svg>
+        </span>
+        <span class="brand-word"><span class="w-light">BOLT</span><span class="w-bold">CLONE</span></span>
+      </div>
+      <button id="stopCaptureBtn" class="btn pill danger hidden">Stop</button>
+    </header>
 
+    <div id="rbacBanner" class="rbac-banner hidden">
+      <span class="rbac-count">RBAC: <strong id="rbacCount">0</strong></span>
+      <button id="rbacCta" class="rbac-cta">Test for BOLA + RBAC issues</button>
+      <button id="rbacDismiss" class="icon-btn" aria-label="Dismiss">&times;</button>
+    </div>
+
+    <section id="landing" class="landing">
+      <div class="landing-deco" aria-hidden="true"></div>
       <div class="input-group">
-        <label for="targetUrl">Target base URL</label>
-        <input id="targetUrl" type="text" placeholder="https://api.example.com" />
+        <label for="targetUrl" class="sr-only">Target base URL</label>
+        <input id="targetUrl" type="text" class="pill-input" placeholder="https://api.example.com" />
+      </div>
+      <div class="mode-toggle">
+        <button id="modeApi" class="mode-btn active">Only base URL</button>
+        <button id="modeAll" class="mode-btn">All browser traffic</button>
+      </div>
+      <button id="startCaptureBtn" class="btn pill primary large">Start Capture</button>
+
+      <div class="capture-rules">
+        <div class="rule-input-row">
+          <input id="newRuleInput" type="text" class="pill-input" placeholder="Add capture rule (origin, path, wildcard)" />
+          <button id="addRuleBtn" class="btn pill outline small">Add Rule</button>
+        </div>
+        <div id="ruleList" class="card-list"></div>
       </div>
 
-      <div class="input-group">
-        <label for="proxyUrl">Proxy template</label>
-        <input id="proxyUrl" type="text" placeholder="https://cors-anywhere.herokuapp.com/{url}" />
-      </div>
-
-      <div class="input-group">
-        <label>Quick checks</label>
-        <div class="checkboxes">
-          <label><input type="checkbox" id="chScanCurrent" /> Scan current tab</label>
-          <label><input type="checkbox" id="chScanAllTabs" /> Scan all open tabs</label>
-          <label><input type="checkbox" id="chRateLimit" checked /> Rate limit</label>
-          <label><input type="checkbox" id="chIdor" checked /> IDOR/BOLA</label>
-          <label><input type="checkbox" id="chSql" checked /> SQLi</label>
-          <label><input type="checkbox" id="chXss" checked /> XSS</label>
-          <label><input type="checkbox" id="chCsrf" checked /> CSRF</label>
-          <label><input type="checkbox" id="chSsrf" checked /> SSRF</label>
-          <label><input type="checkbox" id="chSecHeaders" checked /> Sec headers</label>
+      <div class="feature-list">
+        <div class="feature-card">
+          <span class="feature-num">1</span>
+          <div><strong>Discover</strong><p>Find every API &mdash; no proxies, no config</p></div>
+        </div>
+        <div class="feature-card">
+          <span class="feature-num">2</span>
+          <div><strong>Document</strong><p>Auto-generate OpenAPI specs</p></div>
+        </div>
+        <div class="feature-card">
+          <span class="feature-num">3</span>
+          <div><strong>Test</strong><p>BOLA, RBAC, Mass Assignment, logic tests</p></div>
         </div>
       </div>
+    </section>
 
-      <div class="input-group">
-        <label>AI integration</label>
-        <div class="checkboxes">
-          <label><input type="checkbox" id="chUseAi" /> Enable AI assistance</label>
+    <div id="dashboard" class="dashboard hidden">
+      <nav class="main-tabs">
+        <button class="main-tab active" data-target="discover">Discover</button>
+        <button class="main-tab" data-target="test">Test<span id="testDot" class="dot hidden"></span></button>
+        <span class="spacer"></span>
+      </nav>
+
+      <section id="discoverPage" class="main-page active">
+        <div class="sub-tabs">
+          <button class="sub-tab active" data-sub="traffic">Traffic <span class="badge" id="countTraffic">0</span></button>
+          <button class="sub-tab" data-sub="params">Params <span class="badge" id="countParams">0</span></button>
+          <button class="sub-tab" data-sub="endpoints">Endpoints <span class="badge" id="countEndpoints">0</span></button>
+          <button class="sub-tab" data-sub="auth">Auth <span class="badge" id="countAuth">0</span></button>
         </div>
-        <label for="aiMode">AI mode</label>
-        <select id="aiMode">
-          <option value="openai">OpenAI API</option>
-          <option value="local">Local endpoint (http://localhost:5000/llm)</option>
-        </select>
-        <label for="aiKey">OpenAI API key (secure)</label>
-        <input id="aiKey" type="password" placeholder="sk-... (optional if local)" />
-      </div>
 
-      <div class="controls">
-        <button id="scanButton" class="btn">Start Scan</button>
-        <button id="fromTabButton" class="btn secondary">Use current tab</button>
-        <button id="openSidePanel" class="btn secondary">Open Side Panel</button>
-      </div>
+        <div id="trafficPane" class="sub-page active">
+          <div class="chip-row" id="methodChips"></div>
+          <div class="card-list" id="trafficList"></div>
+        </div>
 
-      <div class="proxy-control">
-        <button id="allTrafficProxy" class="btn secondary">Enable global proxy</button>
-      </div>
+        <div id="paramsPane" class="sub-page">
+          <div class="chip-row" id="paramTypeChips">
+            <button class="chip active" data-ptype="header">Header <span id="cntHeader">0</span></button>
+            <button class="chip" data-ptype="body">Body <span id="cntBody">0</span></button>
+            <button class="chip" data-ptype="query">Query <span id="cntQuery">0</span></button>
+            <span class="chip-sep"></span>
+            <button class="chip" data-ptype="input">Input <span id="cntInput">0</span></button>
+            <button class="chip" data-ptype="response">Response <span id="cntResponse">0</span></button>
+          </div>
+          <div class="card-list" id="paramsList"></div>
+        </div>
 
-      <div class="tabs">
-        <button class="tab-btn active" data-target="resultPage">Scan</button>
-        <button class="tab-btn" data-target="discoveryPage">Discovery</button>
-        <button class="tab-btn" data-target="historyPage">History</button>
-      </div>
-    </aside>
+        <div id="endpointsPane" class="sub-page">
+          <div class="card-list" id="endpointsList"></div>
+        </div>
 
-    <main class="content">
-      <section id="resultPage" class="page active">
-        <div id="status">Idle.</div>
-        <section id="result" class="result"><p>Run a scan to view results.</p></section>
+        <div id="authPane" class="sub-page">
+          <div class="chip-row" id="authTypeChips">
+            <button class="chip active" data-atype="jwt">JWT <span id="cntJwt">0</span></button>
+            <button class="chip" data-atype="apikey">API Key <span id="cntApiKey">0</span></button>
+            <button class="chip" data-atype="basic">Basic <span id="cntBasic">0</span></button>
+            <button class="chip" data-atype="cookie">Cookie <span id="cntCookie">0</span></button>
+          </div>
+          <div class="card-list" id="authList"></div>
+        </div>
       </section>
 
-      <section id="discoveryPage" class="page">
-        <h2>Discovered APIs</h2>
-        <p class="small-text">The extension captures browser traffic and stores candidate API URLs.</p>
-        <button id="refreshDiscovery" class="btn secondary">Refresh discovery list</button>
-        <ul id="discoveryList"></ul>
-      </section>
+      <section id="testPage" class="main-page">
+        <div class="sub-tabs">
+          <button class="sub-tab active" data-sub2="security">Security <span class="badge" id="countSecurityFindings">0</span></button>
+          <button class="sub-tab" data-sub2="manipulator">Manipulator</button>
+        </div>
 
-      <section id="historyPage" class="page">
-        <h2>Scan History</h2>
-        <ul id="historyList"></ul>
+        <div id="securityPane" class="sub-page active">
+          <div class="test-card-list" id="testCardList"></div>
+          <h3 class="section-label">Detected from traffic</h3>
+          <div class="card-list" id="detectedHostList"></div>
+        </div>
+
+        <div id="manipulatorPane" class="sub-page">
+          <div class="wizard-head">
+            <button id="wizBack" class="link-btn hidden">&larr; Back</button>
+            <span class="wizard-title">Manipulator</span>
+            <button id="wizNew" class="btn pill outline small">+ New</button>
+          </div>
+          <div class="stepper" id="stepper">
+            <div class="step active" data-step="1"><span class="step-dot">1</span></div>
+            <div class="step-line"></div>
+            <div class="step" data-step="2"><span class="step-dot">2</span></div>
+            <div class="step-line"></div>
+            <div class="step" data-step="3"><span class="step-dot">3</span></div>
+            <div class="step-line"></div>
+            <div class="step" data-step="4"><span class="step-dot">4</span></div>
+            <div class="step-line"></div>
+            <div class="step" data-step="5"><span class="step-dot">5</span></div>
+          </div>
+          <p class="step-caption" id="stepCaption">Step 1 of 5 &mdash; Pick API</p>
+
+          <div id="wizStep1" class="wiz-step active">
+            <p class="wiz-label">Pick an API</p>
+            <div class="card-list" id="wizApiList"></div>
+            <p class="wiz-or">OR TYPE A CUSTOM URL</p>
+            <input id="wizCustomUrl" type="text" class="pill-input" placeholder="https://api.example.com" />
+          </div>
+
+          <div id="wizStep2" class="wiz-step">
+            <p class="wiz-label">Pick an endpoint</p>
+            <div class="card-list" id="wizEndpointList"></div>
+          </div>
+
+          <div id="wizStep3" class="wiz-step">
+            <p class="wiz-label">Choose tests</p>
+            <div class="checkboxes" id="wizTestChecks">
+              <label><input type="checkbox" id="wzRateLimit" checked /> Rate limit</label>
+              <label><input type="checkbox" id="wzIdor" checked /> IDOR/BOLA</label>
+              <label><input type="checkbox" id="wzSql" checked /> SQLi</label>
+              <label><input type="checkbox" id="wzXss" checked /> XSS</label>
+              <label><input type="checkbox" id="wzCsrf" checked /> CSRF</label>
+              <label><input type="checkbox" id="wzSsrf" checked /> SSRF</label>
+              <label><input type="checkbox" id="wzSecHeaders" checked /> Sec headers</label>
+            </div>
+          </div>
+
+          <div id="wizStep4" class="wiz-step">
+            <p class="wiz-label">Review</p>
+            <dl class="review-card" id="wizReview"></dl>
+          </div>
+
+          <div id="wizStep5" class="wiz-step">
+            <p class="wiz-label">Results</p>
+            <div id="wizResults" class="card-list"></div>
+          </div>
+
+          <div class="wizard-nav">
+            <button id="wizNext" class="btn pill primary" disabled>Next</button>
+          </div>
+        </div>
       </section>
-    </main>
+    </div>
+
+    <footer class="bottombar">
+      <span class="ver">v2.1.5</span>
+      <a href="#" class="foot-link" id="privacyLink">Privacy</a>
+      <span class="spacer-grow"></span>
+      <button id="exportOas" class="btn pill outline tiny">&#8595; OAS</button>
+      <button id="exportJson" class="btn pill outline tiny">&#8595; JSON</button>
+      <span class="spacer-grow"></span>
+      <a href="#" class="foot-link" id="gettingStarted">Getting Started</a>
+      <button id="themeToggle" class="icon-btn" aria-label="Toggle theme">&#9728;</button>
+    </footer>
   </div>
 
   <script src="popup.js"></script>

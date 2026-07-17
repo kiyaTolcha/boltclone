@@ -3,10 +3,11 @@
   "name": "BOLTCLONE",
   "version": "1.0.0",
   "description": "APIsec BOLT clone for traffic capture, analysis, and OpenAPI generation.",
-  "permissions": ["storage", "tabs", "webRequest", "activeTab", "scripting", "alarms"],
+  "permissions": ["storage", "tabs", "webRequest", "activeTab", "scripting", "alarms", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "BOLTCLONE" },
+  "action": { "default_title": "BOLTCLONE" },
+  "side_panel": { "default_path": "panel.html" },
   "devtools_page": "devtools.html",
   "content_scripts": [
     { "matches": ["<all_urls>"], "js": ["content.js"] }

@@ -1,47 +1,284 @@
-const targetInput = document.getElementById('targetUrl');
-const proxyInput = document.getElementById('proxyUrl');
-const modeApiButton = document.getElementById('modeApi');
-const modeAllButton = document.getElementById('modeAll');
-const scanCurrentTab = document.getElementById('chScanCurrent');
-const scanAllTabs = document.getElementById('chScanAllTabs');
-const allTrafficProxy = document.getElementById('allTrafficProxy');
-const scanButton = document.getElementById('scanButton');
-const fromTabButton = document.getElementById('fromTabButton');
-const openSidePanelButton = document.getElementById('openSidePanel');
-const startBgScanButton = document.getElementById('startBgScan');
-const stopBgScanButton = document.getElementById('stopBgScan');
-const exportAnalysisButton = document.getElementById('exportAnalysis');
-const exportOpenApiButton = document.getElementById('exportOpenApi');
-const result = document.getElementById('result');
-const status = document.getElementById('status');
-const historyList = document.getElementById('historyList');
-const discoveryList = document.getElementById('discoveryList');
-const refreshDiscovery = document.getElementById('refreshDiscovery');
-const tabButtons = document.querySelectorAll('.tab-btn');
+const NOISE_HEADERS = new Set([
+  'accept-encoding', 'accept-language', 'connection', 'host', 'user-agent',
+  'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-user',
+  'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'upgrade-insecure-requests',
+  'cache-control', 'pragma', 'priority', 'te', 'origin', 'referer',
+  'content-length', 'date', 'connection', 'keep-alive', 'vary', 'server'
+]);
 
-const severityColors = {
-  critical: '#ff5c64',
-  high: '#ff9f43',
-  medium: '#ffd166',
-  low: '#69d0a3'
-};
+let els = {};
 
-function severityColor(s) {
-  return severityColors[s] || '#94caff';
+function initPopup() {
+  document.querySelectorAll('[id]').forEach((node) => { els[node.id] = node; });
+
+  const missingEls = [];
+  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','themeToggle'].forEach((id) => {
+    if (!els[id]) missingEls.push(id);
+  });
+  console.log('popup.js init: missing elements', missingEls);
+  wireEvents();
 }
 
-function setActivePage(pageId) {
-  const pages = ['capturePage', 'discoveryPage', 'historyPage'];
-  pages.forEach((p) => {
-    const el = document.getElementById(p);
-    if (el) {
-      el.classList.toggle('active', p === pageId);
+function showLanding(resetLabel = false) {
+  showDashboard(false);
+  if (els.startCaptureBtn) els.startCaptureBtn.textContent = resetLabel ? 'New' : 'Start Capture';
+}
+
+const state = {
+  captureMode: 'api',
+  scanState: 'stopped',
+  traffic: [],
+  discoveredApis: [],
+  analysis: [],
+  hosts: [],
+  captureRules: [],
+  activeMainTab: 'discover',
+  activeParamType: 'header',
+  activeAuthType: 'jwt',
+  wizard: { step: 1, api: null, endpoint: null, results: null },
+  forceLanding: false
+};
+
+function wireEvents() {
+  function safeListen(el, event, handler, options) {
+    try {
+      if (el && typeof el.addEventListener === 'function') el.addEventListener(event, handler, options);
+    } catch (err) {
+      console.error('safeListen failed for', el, event, err);
+    }
+  }
+
+  safeListen(els.modeApi, 'click', () => setMode('api'));
+  safeListen(els.modeAll, 'click', () => setMode('all'));
+  safeListen(els.addRuleBtn, 'click', addRuleFromInput);
+  safeListen(els.newRuleInput, 'keypress', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addRuleFromInput();
     }
   });
 
-  tabButtons.forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.target === pageId);
+  safeListen(els.startCaptureBtn, 'click', () => {
+    state.forceLanding = false;
+    const typed = els.targetUrl?.value?.trim ? els.targetUrl.value.trim() : '';
+    const origin = state.captureMode === 'api' && typed ? normalizeUrl(typed) : null;
+    chrome.runtime.sendMessage({ type: 'setTargetOrigin', origin }, () => {
+      chrome.runtime.sendMessage({ type: 'startScan' }, () => {
+        state.scanState = 'running';
+        showDashboard(true);
+        refreshAll();
+      });
+    });
   });
+
+  safeListen(els.stopCaptureBtn, 'click', () => {
+    chrome.runtime.sendMessage({ type: 'stopScan' }, () => {
+      state.scanState = 'stopped';
+      state.forceLanding = state.traffic.length === 0 && state.analysis.length === 0 && state.discoveredApis.length === 0;
+      if (state.forceLanding) {
+        showLanding(true);
+      } else {
+        showDashboard(true);
+      }
+      refreshAll();
+    });
+  });
+
+  safeListen(els.ruleList, 'click', (e) => {
+    const toggle = e.target.closest('.toggle-rule');
+    const remove = e.target.closest('.remove-rule');
+    if (toggle) {
+      const id = toggle.dataset.ruleId;
+      chrome.runtime.sendMessage({ type: 'toggleCaptureRule', id }, (res) => {
+        if (res?.rules) {
+          state.captureRules = res.rules;
+          renderRuleList();
+        }
+      });
+      return;
+    }
+    if (remove) {
+      const id = remove.dataset.ruleId;
+      chrome.runtime.sendMessage({ type: 'removeCaptureRule', id }, (res) => {
+        if (res?.rules) {
+          state.captureRules = res.rules;
+          renderRuleList();
+        }
+      });
+    }
+  });
+
+  document.querySelectorAll('.main-tab').forEach((btn) => {
+    safeListen(btn, 'click', () => {
+      state.activeMainTab = btn.dataset.target;
+      document.querySelectorAll('.main-tab').forEach((b) => b.classList.toggle('active', b === btn));
+      if (els.discoverPage) els.discoverPage.classList.toggle('active', btn.dataset.target === 'discover');
+      if (els.testPage) els.testPage.classList.toggle('active', btn.dataset.target === 'test');
+    });
+  });
+
+  document.querySelectorAll('.sub-tab[data-sub]').forEach((btn) => {
+    safeListen(btn, 'click', () => {
+      document.querySelectorAll('.sub-tab[data-sub]').forEach((b) => b.classList.toggle('active', b === btn));
+      ['traffic', 'params', 'endpoints', 'auth'].forEach((key) => {
+        if (els[`${key}Pane`]) els[`${key}Pane`].classList.toggle('active', key === btn.dataset.sub);
+      });
+    });
+  });
+
+  document.querySelectorAll('.sub-tab[data-sub2]').forEach((btn) => {
+    safeListen(btn, 'click', () => {
+      document.querySelectorAll('.sub-tab[data-sub2]').forEach((b) => b.classList.toggle('active', b === btn));
+      if (els.securityPane) els.securityPane.classList.toggle('active', btn.dataset.sub2 === 'security');
+      if (els.manipulatorPane) els.manipulatorPane.classList.toggle('active', btn.dataset.sub2 === 'manipulator');
+    });
+  });
+
+  safeListen(els.methodChips, 'click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    const wasActive = chip.classList.contains('active');
+    if (els.methodChips) els.methodChips.querySelectorAll('.chip').forEach((c) => c.classList.remove('active'));
+    if (!wasActive) chip.classList.add('active');
+    renderTraffic();
+  });
+
+  safeListen(els.paramTypeChips, 'click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.activeParamType = chip.dataset.ptype;
+    if (els.paramTypeChips) els.paramTypeChips.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    renderParams();
+  });
+
+  safeListen(els.authTypeChips, 'click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.activeAuthType = chip.dataset.atype;
+    if (els.authTypeChips) els.authTypeChips.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    renderAuth();
+  });
+
+  safeListen(els.wizApiList, 'click', (e) => {
+    const card = e.target.closest('[data-api]');
+    if (!card) return;
+    state.wizard.api = card.dataset.api;
+    els.wizCustomUrl.value = '';
+    updateWizardNav();
+  });
+
+  safeListen(els.wizCustomUrl, 'input', () => {
+    if (els.wizCustomUrl.value.trim()) state.wizard.api = null;
+    els.wizNext.disabled = !(state.wizard.api || els.wizCustomUrl.value.trim());
+  });
+
+  safeListen(els.wizEndpointList, 'click', (e) => {
+    const card = e.target.closest('[data-endpoint-url]');
+    if (!card) return;
+    state.wizard.endpoint = { url: card.dataset.endpointUrl, method: card.dataset.endpointMethod };
+    renderWizStep2();
+    els.wizNext.disabled = false;
+  });
+
+  safeListen(els.wizNext, 'click', () => {
+    if (state.wizard.step === 5) {
+      resetWizard();
+      return;
+    }
+    const customUrl = els.wizCustomUrl.value.trim();
+    if (state.wizard.step === 1 && customUrl && !state.wizard.api) {
+      const normalized = normalizeUrl(customUrl);
+      state.wizard.endpoint = normalized ? { url: normalized, method: 'GET' } : null;
+      state.wizard.step = 3;
+    } else if (state.wizard.step < 5) {
+      state.wizard.step += 1;
+    }
+    updateWizardNav();
+  });
+
+  safeListen(els.wizBack, 'click', () => {
+    if (state.wizard.step > 1) state.wizard.step -= 1;
+    if (state.wizard.step === 5) state.wizard.results = null;
+    updateWizardNav();
+  });
+
+  safeListen(els.wizNew, 'click', resetWizard);
+
+  safeListen(els.rbacDismiss, 'click', () => {
+    if (els.rbacBanner) {
+      els.rbacBanner.dataset.dismissed = 'true';
+      els.rbacBanner.classList.add('hidden');
+    }
+  });
+
+  safeListen(els.rbacCta, 'click', () => {
+    const mainBtn = document.querySelector('.main-tab[data-target="test"]');
+    const subBtn = document.querySelector('.sub-tab[data-sub2="manipulator"]');
+    if (mainBtn) mainBtn.click();
+    if (subBtn) subBtn.click();
+    if (els.wzIdor) els.wzIdor.checked = true;
+    if (els.wzSql) els.wzSql.checked = false;
+    if (els.wzXss) els.wzXss.checked = false;
+    if (els.wzCsrf) els.wzCsrf.checked = false;
+    if (els.wzSsrf) els.wzSsrf.checked = false;
+  });
+
+  safeListen(els.testCardList, 'click', (e) => {
+    const btn = e.target.closest('[data-run]');
+    if (!btn) return;
+    const subBtn = document.querySelector('.sub-tab[data-sub2="manipulator"]');
+    if (subBtn) subBtn.click();
+  });
+
+  safeListen(els.exportJson, 'click', () => {
+    chrome.runtime.sendMessage({ type: 'getAnalysis' }, (r) => {
+      downloadFile('boltclone-analysis.json', JSON.stringify({ exportedAt: new Date().toISOString(), analysis: r?.analysis || [] }, null, 2));
+    });
+  });
+
+  safeListen(els.exportOas, 'click', () => {
+    chrome.runtime.sendMessage({ type: 'exportSpec' }, (r) => {
+      if (r?.spec) downloadFile('boltclone-openapi.json', JSON.stringify(r.spec, null, 2));
+    });
+  });
+}
+
+function timeoutFetch(url, opts = {}, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+    fetch(url, opts).then((resp) => { clearTimeout(timer); resolve(resp); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+function normalizeUrl(value) {
+  try {
+    if (!value.startsWith('http://') && !value.startsWith('https://')) value = `https://${value}`;
+    const parsed = new URL(value);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return null;
+  }
+}
+
+function downloadFile(filename, text) {
+  const a = document.createElement('a');
+  a.setAttribute('href', 'data:text/json;charset=utf-8,' + encodeURIComponent(text));
+  a.setAttribute('download', filename);
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function statusClass(status) {
+  if (!status) return 'status-error';
+  if (status >= 200 && status < 300) return 'status-2xx';
+  if (status >= 400 && status < 500) return 'status-4xx';
+  return 'status-5xx';
 }
 
 function getMitigation(key) {
@@ -57,771 +294,667 @@ function getMitigation(key) {
   return 'Validate and mitigate with secure coding controls.';
 }
 
-function updateCaptureModeUi(mode) {
-  if (mode === 'all') {
-    modeAllButton?.classList.add('active');
-    modeAllButton?.classList.remove('secondary');
-    modeApiButton?.classList.remove('active');
-    modeApiButton?.classList.add('secondary');
-  } else {
-    modeApiButton?.classList.add('active');
-    modeApiButton?.classList.remove('secondary');
-    modeAllButton?.classList.remove('active');
-    modeAllButton?.classList.add('secondary');
-  }
-  status.textContent = `Capture mode: ${mode}.`;
-}
+// --- Traffic aggregation -----------------------------------------------
 
-function setCaptureMode(mode) {
-  const normalized = mode === 'all' ? 'all' : 'api';
-  chrome.runtime.sendMessage({ type: 'setCaptureMode', mode: normalized }, (response) => {
-    console.log('setCaptureMode', response);
-    updateCaptureModeUi(normalized);
+function groupTrafficById(traffic) {
+  const byId = new Map();
+  traffic.forEach((entry) => {
+    if (!entry.id) return;
+    byId.set(entry.id, { ...(byId.get(entry.id) || {}), ...entry });
   });
+  return Array.from(byId.values()).filter((e) => e.url && e.method);
 }
 
-async function openSidePanel() {
-  if (!chrome.sidePanel) {
-    result.innerHTML = '<p class="entry">sidePanel API is unsupported in this browser.</p>';
+function computeEndpoints(merged) {
+  const byHost = new Map();
+  merged.forEach((entry) => {
+    let origin, pathname;
+    try {
+      const u = new URL(entry.url);
+      origin = u.origin;
+      pathname = u.pathname || '/';
+    } catch { return; }
+    if (!byHost.has(origin)) byHost.set(origin, new Map());
+    const paths = byHost.get(origin);
+    const key = `${entry.method} ${pathname}`;
+    if (!paths.has(key)) {
+      paths.set(key, { method: entry.method, path: pathname, status: entry.statusCode, count: 0, hasAuth: false });
+    }
+    const rec = paths.get(key);
+    rec.count += 1;
+    if (typeof entry.statusCode === 'number') rec.status = entry.statusCode;
+    if (entry.requestHeaders?.some((h) => h.name.toLowerCase() === 'authorization')) rec.hasAuth = true;
+  });
+  return byHost;
+}
+
+function computeParams(merged) {
+  const header = new Map();
+  const body = new Map();
+  const query = new Map();
+  const response = new Map();
+
+  const bump = (map, name, value, entry) => {
+    if (!map.has(name)) map.set(name, { values: new Set(), used: new Set() });
+    const rec = map.get(name);
+    if (value !== undefined && value !== null) rec.values.add(String(value));
+    try {
+      const u = new URL(entry.url);
+      rec.used.add(`${entry.method} ${u.pathname}`);
+    } catch { /* ignore */ }
+  };
+
+  merged.forEach((entry) => {
+    (entry.requestHeaders || []).forEach((h) => {
+      const name = h.name.toLowerCase();
+      if (NOISE_HEADERS.has(name)) return;
+      bump(header, h.name, h.value, entry);
+    });
+
+    (entry.responseHeaders || []).forEach((h) => {
+      const name = h.name.toLowerCase();
+      if (NOISE_HEADERS.has(name) || name === 'content-type') return;
+      bump(response, h.name, h.value, entry);
+    });
+
+    try {
+      const u = new URL(entry.url);
+      u.searchParams.forEach((value, name) => bump(query, name, value, entry));
+    } catch { /* ignore */ }
+
+    if (entry.requestBody?.formData) {
+      Object.entries(entry.requestBody.formData).forEach(([name, values]) => {
+        bump(body, name, Array.isArray(values) ? values[0] : values, entry);
+      });
+    }
+    if (entry.requestBody?.raw?.[0]?.text) {
+      try {
+        const parsed = JSON.parse(entry.requestBody.raw[0].text);
+        if (parsed && typeof parsed === 'object') {
+          Object.entries(parsed).forEach(([name, value]) => bump(body, name, value, entry));
+        }
+      } catch { /* not JSON, skip */ }
+    }
+  });
+
+  return { header, body, query, response };
+}
+
+function classifyAuth(merged) {
+  const buckets = { jwt: new Map(), apikey: new Map(), basic: new Map(), cookie: new Map() };
+  const bump = (map, key, entry) => {
+    if (!map.has(key)) map.set(key, { count: 0, entries: [] });
+    const rec = map.get(key);
+    rec.count += 1;
+    rec.entries.push(entry);
+  };
+
+  merged.forEach((entry) => {
+    (entry.requestHeaders || []).forEach((h) => {
+      const name = h.name.toLowerCase();
+      const val = h.value || '';
+      if (name === 'authorization') {
+        if (/^bearer\s+ey/i.test(val)) bump(buckets.jwt, val.replace(/^bearer\s+/i, ''), entry);
+        else if (/^basic\s+/i.test(val)) bump(buckets.basic, val, entry);
+        else if (val) bump(buckets.apikey, val, entry);
+      } else if (['x-api-key', 'api-key', 'apikey'].includes(name)) {
+        bump(buckets.apikey, val, entry);
+      } else if (name === 'cookie') {
+        bump(buckets.cookie, val, entry);
+      }
+    });
+  });
+
+  return buckets;
+}
+
+function jwtStatus(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (payload.exp) return Date.now() < payload.exp * 1000 ? 'Active' : 'Expired';
+  } catch { /* not a valid JWT payload */ }
+  return 'Detected';
+}
+
+// --- Rendering: Traffic --------------------------------------------------
+
+function renderTraffic() {
+  const merged = groupTrafficById(state.traffic)
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  const methodCounts = new Map();
+  merged.forEach((e) => methodCounts.set(e.method, (methodCounts.get(e.method) || 0) + 1));
+
+  els.methodChips.innerHTML = Array.from(methodCounts.entries())
+    .map(([method, count]) => `<button class="chip" data-method="${escapeHtml(method)}">${escapeHtml(method)} <span>${count}</span></button>`)
+    .join('');
+
+  const activeMethodChip = els.methodChips.querySelector('.chip.active');
+  const filterMethod = activeMethodChip?.dataset.method;
+  const rows = filterMethod ? merged.filter((e) => e.method === filterMethod) : merged;
+
+  if (rows.length === 0) {
+    els.trafficList.innerHTML = '<div class="empty-state">No traffic captured yet.</div>';
+  } else {
+    els.trafficList.innerHTML = rows.slice(0, 100).map((e) => {
+      let path = e.url, host = '';
+      try { const u = new URL(e.url); path = u.pathname || '/'; host = u.host; } catch { /* keep raw */ }
+      return `<div class="card">
+        <span class="method-badge method-${escapeHtml(e.method)}">${escapeHtml(e.method)}</span>
+        <div class="main"><div class="path">${escapeHtml(path)}</div><div class="host">${escapeHtml(host)}</div></div>
+        <span class="status-pill ${statusClass(e.statusCode)}">${e.statusCode || 'n/a'}</span>
+      </div>`;
+    }).join('');
+  }
+
+  els.countTraffic.textContent = String(merged.length);
+}
+
+// --- Rendering: Params -----------------------------------------------
+
+function renderParams() {
+  const merged = groupTrafficById(state.traffic);
+  const { header, body, query, response } = computeParams(merged);
+  const inputCount = header.size + body.size + query.size;
+
+  els.cntHeader.textContent = header.size;
+  els.cntBody.textContent = body.size;
+  els.cntQuery.textContent = query.size;
+  els.cntInput.textContent = inputCount;
+  els.cntResponse.textContent = response.size;
+  els.countParams.textContent = String(inputCount + response.size);
+
+  const kindMap = { header, body, query, response, input: null };
+  let map = kindMap[state.activeParamType];
+  if (state.activeParamType === 'input') {
+    map = new Map([...header, ...body, ...query]);
+  }
+
+  const entries = Array.from((map || new Map()).entries());
+  if (entries.length === 0) {
+    els.paramsList.innerHTML = '<div class="empty-state">No parameters observed for this type yet.</div>';
     return;
   }
 
+  els.paramsList.innerHTML = entries.map(([name, rec]) => {
+    const values = Array.from(rec.values).slice(0, 3).map((v) => `<span class="param-value">${escapeHtml(v.length > 40 ? v.slice(0, 40) + '…' : v)}</span>`).join('');
+    const used = Array.from(rec.used).slice(0, 4).join(', ');
+    return `<div class="param-card">
+      <div class="row1">
+        <span><span class="param-kind">${escapeHtml(state.activeParamType)}</span> <span class="param-name">${escapeHtml(name)}</span></span>
+        <span class="param-count">${rec.used.size}x</span>
+      </div>
+      <div class="param-values">${values}</div>
+      <div class="param-used">Used in: ${escapeHtml(used)}</div>
+    </div>`;
+  }).join('');
+}
+
+// --- Rendering: Endpoints ----------------------------------------------
+
+function renderEndpoints() {
+  const merged = groupTrafficById(state.traffic);
+  const byHost = computeEndpoints(merged);
+
+  els.countEndpoints.textContent = String(Array.from(byHost.values()).reduce((sum, m) => sum + m.size, 0));
+
+  if (byHost.size === 0) {
+    els.endpointsList.innerHTML = '<div class="empty-state">No endpoints discovered yet.</div>';
+    return;
+  }
+
+  els.endpointsList.innerHTML = Array.from(byHost.entries()).map(([origin, paths]) => {
+    const rows = Array.from(paths.values()).map((rec) => `
+      <div class="card">
+        <span class="method-badge method-${escapeHtml(rec.method)}">${escapeHtml(rec.method)}</span>
+        <div class="main"><div class="path">${escapeHtml(rec.path)}</div></div>
+        <span class="icons">${rec.hasAuth ? '🔒' : ''}</span>
+        <span class="param-count">${rec.count}</span>
+      </div>`).join('');
+    return `<div class="host-group">
+      <div class="host-group-head"><span>${escapeHtml(origin)}</span><span>${paths.size} endpoints</span></div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
+// --- Rendering: Auth -----------------------------------------------------
+
+function renderAuth() {
+  const merged = groupTrafficById(state.traffic);
+  const buckets = classifyAuth(merged);
+
+  els.cntJwt.textContent = buckets.jwt.size;
+  els.cntApiKey.textContent = buckets.apikey.size;
+  els.cntBasic.textContent = buckets.basic.size;
+  els.cntCookie.textContent = buckets.cookie.size;
+  els.countAuth.textContent = String(buckets.jwt.size + buckets.apikey.size + buckets.basic.size + buckets.cookie.size);
+
+  const map = buckets[state.activeAuthType] || new Map();
+  const entries = Array.from(map.entries());
+
+  if (entries.length === 0) {
+    els.authList.innerHTML = '<div class="empty-state">No credentials of this type observed yet.</div>';
+    return;
+  }
+
+  els.authList.innerHTML = entries.map(([token, rec]) => {
+    const short = token.length > 28 ? `${token.slice(0, 14)}…${token.slice(-6)}` : token;
+    const status = state.activeAuthType === 'jwt' ? jwtStatus(token) : 'Detected';
+    return `<div class="auth-card">
+      <span class="auth-kind">${escapeHtml(state.activeAuthType)}</span>
+      <span class="auth-token" title="${escapeHtml(token)}">${escapeHtml(short)}</span>
+      <span class="auth-status">${escapeHtml(status)}</span>
+      <span class="auth-reqs">${rec.count} reqs</span>
+    </div>`;
+  }).join('');
+}
+
+// --- Rendering: Security tab ---------------------------------------------
+
+function testProgressWidth(count) {
+  if (count === 0) return 4;
+  return Math.min(100, 20 + count * 15);
+}
+
+function renderSecurity() {
+  const counts = { BOLA: 0, RBAC: 0, MassAssignment: 0 };
+  state.analysis.forEach((f) => { if (counts[f.type] !== undefined) counts[f.type] += 1; });
+
+  const merged = groupTrafficById(state.traffic);
+  const jwtCount = classifyAuth(merged).jwt.size;
+
+  const cards = [
+    { title: 'JWT Security Tests', count: jwtCount, key: 'jwt' },
+    { title: 'BOLA Tests', count: counts.BOLA, key: 'bola' },
+    { title: 'RBAC Tests', count: counts.RBAC, key: 'rbac' },
+    { title: 'Mass Assignment Tests', count: counts.MassAssignment, key: 'mass' }
+  ];
+
+  els.testCardList.innerHTML = cards.map((c) => `
+    <div class="test-card">
+      <div class="row1">
+        <span class="title">${escapeHtml(c.title)}</span>
+        <span class="count">${c.count}</span>
+      </div>
+      <div class="row2">
+        <div class="progress-track"><div class="progress-fill" style="width:${testProgressWidth(c.count)}%"></div></div>
+        <button class="link-btn" data-run="${c.key}">Run Deep Test &rarr;</button>
+      </div>
+    </div>`).join('');
+
+  const totalFindings = counts.BOLA + counts.RBAC + counts.MassAssignment;
+  els.countSecurityFindings.textContent = String(totalFindings);
+  els.testDot.classList.toggle('hidden', totalFindings === 0);
+
+  if (state.hosts.length === 0) {
+    els.detectedHostList.innerHTML = '<div class="empty-state">No traffic analyzed yet.</div>';
+  } else {
+    els.detectedHostList.innerHTML = state.hosts.map((h) => `
+      <div class="detected-card">
+        <strong>${escapeHtml(h.name)} API</strong>
+        <div class="host">${escapeHtml(h.origin)}</div>
+        <div class="tag-row">${h.tags.map((t) => `<span class="tag tag-${t.kind}">${escapeHtml(t.label)}</span>`).join('')}</div>
+      </div>`).join('');
+  }
+
+  if (counts.RBAC > 0) {
+    els.rbacCount.textContent = String(counts.RBAC);
+    if (!els.rbacBanner.dataset.dismissed) els.rbacBanner.classList.remove('hidden');
+  } else {
+    els.rbacBanner.classList.add('hidden');
+  }
+}
+
+function renderDiscoverAll() {
+  renderTraffic();
+  renderParams();
+  renderEndpoints();
+  renderAuth();
+}
+
+// --- Manipulator wizard --------------------------------------------------
+
+function wizardApiList() {
+  const byHost = new Map();
+  state.discoveredApis.forEach((item) => {
+    let origin;
+    try { origin = new URL(item.url).origin; } catch { return; }
+    if (!byHost.has(origin)) byHost.set(origin, { methods: new Set(), count: 0 });
+    const rec = byHost.get(origin);
+    rec.methods.add(item.method || 'GET');
+    rec.count += 1;
+  });
+  return byHost;
+}
+
+function renderWizStep1() {
+  const byHost = wizardApiList();
+  if (byHost.size === 0) {
+    els.wizApiList.innerHTML = '<div class="empty-state">No APIs discovered yet. Capture some traffic first.</div>';
+    return;
+  }
+  els.wizApiList.innerHTML = Array.from(byHost.entries()).map(([origin, rec]) => {
+    const selected = state.wizard.api === origin ? 'selected' : '';
+    const methods = Array.from(rec.methods).slice(0, 2).map((m) => `<span class="method-badge method-${escapeHtml(m)}">${escapeHtml(m)}</span>`).join(' ');
+    return `<div class="card selectable ${selected}" data-api="${escapeHtml(origin)}">
+      <div class="main"><div class="path">${escapeHtml(origin)}</div><div class="host">${rec.count} endpoints</div></div>
+      ${methods}
+    </div>`;
+  }).join('');
+}
+
+function renderWizStep2() {
+  const endpoints = state.discoveredApis.filter((item) => {
+    try { return new URL(item.url).origin === state.wizard.api; } catch { return false; }
+  });
+  const unique = new Map();
+  endpoints.forEach((item) => {
+    try {
+      const u = new URL(item.url);
+      const key = `${item.method} ${u.pathname}`;
+      if (!unique.has(key)) unique.set(key, { method: item.method || 'GET', path: u.pathname, url: item.url });
+    } catch { /* skip */ }
+  });
+
+  if (unique.size === 0) {
+    els.wizEndpointList.innerHTML = '<div class="empty-state">No endpoints found for this API.</div>';
+    return;
+  }
+
+  els.wizEndpointList.innerHTML = Array.from(unique.values()).map((rec) => {
+    const selected = state.wizard.endpoint?.url === rec.url ? 'selected' : '';
+    return `<div class="card selectable ${selected}" data-endpoint-url="${escapeHtml(rec.url)}" data-endpoint-method="${escapeHtml(rec.method)}">
+      <span class="method-badge method-${escapeHtml(rec.method)}">${escapeHtml(rec.method)}</span>
+      <div class="main"><div class="path">${escapeHtml(rec.path)}</div></div>
+    </div>`;
+  }).join('');
+}
+
+function renderWizStep4() {
+  const target = state.wizard.endpoint?.url || state.wizard.api;
+  const tests = Array.from(els.wizTestChecks.querySelectorAll('input[type=checkbox]:checked'))
+    .map((cb) => cb.parentElement.textContent.trim());
+  els.wizReview.innerHTML = `
+    <dt>Target</dt><dd>${escapeHtml(target || '(none)')}</dd>
+    <dt>Tests</dt><dd>${tests.length ? escapeHtml(tests.join(', ')) : 'None selected'}</dd>`;
+}
+
+async function runWizardTests() {
+  const target = state.wizard.endpoint?.url || state.wizard.api;
+  els.wizResults.innerHTML = '<div class="empty-state">Running tests…</div>';
+  const findings = [];
+
   try {
-    if (chrome.sidePanel.setOptions) {
-      await chrome.sidePanel.setOptions({ path: 'panel.html', enabled: true });
+    const url = new URL(target);
+
+    if (els.wzRateLimit.checked) {
+      const attempts = await Promise.all(Array.from({ length: 6 }, () => timeoutFetch(target, { method: 'GET', mode: 'cors' }, 8000).catch((e) => e)));
+      const statuses = attempts.filter((r) => r instanceof Response).map((r) => r.status);
+      if (!statuses.includes(429) && statuses.filter((s) => s >= 200 && s < 300).length > 3) {
+        findings.push({ title: 'No rate-limiting detected', severity: 'medium', evidence: `Statuses: ${statuses.join(', ')}` });
+      }
     }
 
-    if (chrome.sidePanel.open) {
-      await chrome.sidePanel.open({});
-      result.innerHTML = '<p class="entry">Side panel opened successfully.</p>';
-    } else {
-      result.innerHTML = '<p class="entry">sidePanel.open() is not available; panel options set.</p>';
+    if (els.wzIdor.checked) {
+      const segments = url.pathname.split('/').filter(Boolean);
+      const idx = segments.findIndex((s) => /^\d+$/.test(s));
+      if (idx !== -1) {
+        const original = segments[idx];
+        const alt = String(Number(original) + 1);
+        const trial = new URL(target);
+        trial.pathname = url.pathname.replace(`/${original}`, `/${alt}`);
+        const resp = await timeoutFetch(trial.toString(), { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+        if (resp && resp.status >= 200 && resp.status < 300) {
+          findings.push({ title: 'Potential IDOR/BOLA', severity: 'high', evidence: `${trial.toString()} returned ${resp.status}` });
+        }
+      }
+    }
+
+    if (els.wzSql.checked) {
+      const trial = new URL(target);
+      trial.searchParams.set('q', "' OR '1'='1");
+      const resp = await timeoutFetch(trial.toString(), { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+      if (resp && resp.status >= 200 && resp.status < 300) {
+        const text = await resp.text();
+        if (text.toLowerCase().includes('sql') || text.toLowerCase().includes('syntax error')) {
+          findings.push({ title: 'Potential SQL Injection', severity: 'high', evidence: `Response contained SQL error indicators (status ${resp.status})` });
+        }
+      }
+    }
+
+    if (els.wzXss.checked) {
+      const trial = new URL(target);
+      trial.searchParams.set('q', '<script>alert(1)</script>');
+      const resp = await timeoutFetch(trial.toString(), { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+      if (resp && resp.status >= 200 && resp.status < 300) {
+        const text = await resp.text();
+        if (text.includes('<script>alert(1)</script>')) {
+          findings.push({ title: 'Potential Reflected XSS', severity: 'high', evidence: 'Payload reflected unescaped in response body.' });
+        }
+      }
+    }
+
+    if (els.wzCsrf.checked) {
+      const resp = await timeoutFetch(target, { method: 'OPTIONS', mode: 'cors' }, 8000).catch(() => null);
+      const allow = resp?.headers.get('access-control-allow-methods') || '';
+      if (/put|delete|post/i.test(allow)) {
+        findings.push({ title: 'Potential CSRF risk', severity: 'medium', evidence: `CORS allows: ${allow}` });
+      }
+    }
+
+    if (els.wzSsrf.checked) {
+      const trial = new URL(target);
+      trial.searchParams.set('target', 'http://169.254.169.254/latest/meta-data/');
+      const resp = await timeoutFetch(trial.toString(), { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+      if (resp && resp.status >= 200 && resp.status < 300) {
+        findings.push({ title: 'Potential SSRF vector', severity: 'high', evidence: 'Endpoint accepted an internal metadata URL parameter.' });
+      }
+    }
+
+    if (els.wzSecHeaders.checked) {
+      const resp = await timeoutFetch(target, { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+      if (resp) {
+        const checks = { csp: 'content-security-policy', hsts: 'strict-transport-security', xfo: 'x-frame-options' };
+        const missing = Object.entries(checks).filter(([, header]) => !resp.headers.get(header)).map(([key]) => key.toUpperCase());
+        if (missing.length) findings.push({ title: 'Missing security headers', severity: 'medium', evidence: `Missing: ${missing.join(', ')}` });
+      }
     }
   } catch (err) {
-    result.innerHTML = `<p class="entry">Failed to open side panel: ${err.message || err}</p>`;
+    findings.push({ title: 'Test run failed', severity: 'low', evidence: err.message || String(err) });
   }
+
+  state.wizard.results = findings;
+  renderWizResults();
 }
 
-async function aiEnrichScan(scan) {
-  try {
-    const useAi = document.getElementById('chUseAi').checked;
-    if (!useAi) return scan;
-
-    const mode = document.getElementById('aiMode').value;
-    const apiKey = document.getElementById('aiKey').value.trim();
-
-    const prompt = `APIsec BOLT local analysis request:\nTarget: ${scan.target}\nFindings:\n${scan.vulns.map((v) => `- ${v.title}: ${v.description} Evidence:${v.evidence}`).join('\n')}\nReturn a short remediation summary with risk prioritization.`;
-
-    let responseJson;
-    if (mode === 'openai') {
-      if (!apiKey) {
-        scan.ai = { error: 'OpenAI API key required.' };
-        return scan;
-      }
-      responseJson = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 350 })
-      }).then((r) => r.json());
-
-      scan.ai = { provider: 'openai', summary: responseJson.choices?.[0]?.message?.content || 'No summary from OpenAI.' };
-    } else {
-      const localUrl = 'http://localhost:5000/api/llm';
-      responseJson = await fetch(localUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, model: 'local-llm' })
-      }).then((r) => r.json());
-      scan.ai = { provider: 'local', summary: responseJson?.answer || 'No local summary.' };
-    }
-  } catch (error) {
-    scan.ai = { error: error.message || String(error) };
-  }
-  return scan;
-}
-
-function getFetchUrl(url) {
-  const proxy = proxyInput.value.trim();
-  return buildProxyUrl(url, proxy);
-}
-
-function renderResult(scan, append = false) {
-  if (!append) {
-    result.innerHTML = '';
-  }
-
-  const summary = document.createElement('div');
-  summary.className = 'entry';
-  summary.innerHTML = `<h3>Scan ${scan.target}</h3><p>Status: <strong>${scan.status}</strong>, OWASP coverage: <strong>${scan.owaspCoverage}/10</strong></p><p>Detected ${scan.vulns.length} issue(s)</p>`;
-  result.appendChild(summary);
-
-  const scoreBar = document.createElement('div');
-  scoreBar.className = 'score-bar';
-  scoreBar.innerHTML = `<div class="score-fill" style="width:${scan.score}%"></div><span class="score-value">${scan.score}%</span>`;
-  result.appendChild(scoreBar);
-
-  if (scan.vulns.length === 0) {
-    const clearNote = document.createElement('p');
-    clearNote.className = 'entry';
-    clearNote.textContent = 'No vulnerability indicators found.';
-    result.appendChild(clearNote);
-  } else {
-    scan.vulns.forEach((vuln) => {
-      const node = document.createElement('div');
-      node.className = 'vulnerability';
-      node.style.borderColor = severityColor(vuln.severity);
-      const mitigation = getMitigation(vuln.id || vuln.title);
-      node.innerHTML = `<strong>${vuln.title}</strong> <small>${vuln.severity.toUpperCase()}</small><p>${vuln.description}</p><p><em>Evidence: ${vuln.evidence}</em></p><p class="mitigation"><strong>Mitigation:</strong> ${mitigation}</p>`;
-      result.appendChild(node);
-    });
-  }
-
-  if (scan.ai) {
-    const aiContainer = document.createElement('div');
-    aiContainer.className = 'vulnerability';
-    aiContainer.style.borderColor = '#5d5dff';
-    aiContainer.innerHTML = `<strong>AI Summary (${scan.ai.provider || 'ai'})</strong><p>${scan.ai.summary || scan.ai.error || 'No AI feedback.'}</p>`;
-    result.appendChild(aiContainer);
-  }
-}
-
-function renderHistory(entries) {
-  historyList.innerHTML = '';
-  if (!entries.length) {
-    historyList.innerHTML = '<li>No prior scans.</li>';
+function renderWizResults() {
+  const findings = state.wizard.results || [];
+  if (findings.length === 0) {
+    els.wizResults.innerHTML = '<div class="empty-state">No issues detected by the selected tests.</div>';
     return;
   }
-  entries.forEach((entry) => {
-    const li = document.createElement('li');
-    li.textContent = `${new Date(entry.scannedAt).toLocaleTimeString()} - ${entry.target} - ${entry.vulns.length} issues - score ${entry.score}%`;
-    historyList.appendChild(li);
-  });
+  els.wizResults.innerHTML = findings.map((f) => `
+    <div class="detected-card">
+      <strong>${escapeHtml(f.title)}</strong>
+      <div class="host">${escapeHtml(f.evidence)}</div>
+      <div class="tag-row"><span class="tag tag-${f.severity === 'high' ? 'red' : f.severity === 'medium' ? 'amber' : 'purple'}">${escapeHtml(f.severity)}</span></div>
+      <p class="param-used">Mitigation: ${escapeHtml(getMitigation(f.title))}</p>
+    </div>`).join('');
 }
 
-function renderDiscoveredApis(entries) {
-  if (!discoveryList) return;
-  discoveryList.innerHTML = '';
-  if (!entries || entries.length === 0) {
-    discoveryList.innerHTML = '<li>No discovered API calls yet.</li>';
-    return;
-  }
-
-  const unique = [];
-  const seen = new Set();
-  entries.slice(0, 40).forEach((item) => {
-    const key = `${item.url}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(item);
-    }
+function updateWizardNav() {
+  const step = state.wizard.step;
+  document.querySelectorAll('.step').forEach((el) => {
+    const n = Number(el.dataset.step);
+    el.classList.toggle('active', n === step);
+    el.classList.toggle('done', n < step);
   });
+  document.querySelectorAll('.wiz-step').forEach((el) => el.classList.remove('active'));
+  els[`wizStep${step}`].classList.add('active');
 
-  unique.forEach((item) => {
-    const li = document.createElement('li');
-    li.textContent = `${item.method || 'GET'} ${item.url} (${item.status || 'n/a'})`;
-    li.title = `Saw at ${item.timestamp}`;
-    discoveryList.appendChild(li);
-  });
+  const captions = ['Pick API', 'Pick an endpoint', 'Choose tests', 'Review', 'Results'];
+  els.stepCaption.textContent = `Step ${step} of 5 — ${captions[step - 1]}`;
+  els.wizBack.classList.toggle('hidden', step === 1);
+
+  const hasTarget = !!(state.wizard.api || els.wizCustomUrl.value.trim());
+  const canAdvance = { 1: hasTarget, 2: !!state.wizard.endpoint, 3: true, 4: true, 5: true };
+  els.wizNext.disabled = !canAdvance[step];
+  els.wizNext.textContent = step === 4 ? 'Run Tests' : step === 5 ? 'Start Over' : 'Next';
+
+  if (step === 1) renderWizStep1();
+  if (step === 2) renderWizStep2();
+  if (step === 4) renderWizReview();
+  if (step === 5 && !state.wizard.results) runWizardTests();
 }
 
-function loadDiscoveredApis() {
-  chrome.runtime.sendMessage({ type: 'getDiscoveredApis' }, (response) => {
-    if (response?.discoveredApis) {
-      renderDiscoveredApis(response.discoveredApis);
-    } else {
-      chrome.storage.local.get({ discoveredApis: [] }, ({ discoveredApis = [] }) => {
-        renderDiscoveredApis(discoveredApis);
-      });
-    }
-  });
+function renderWizReview() { renderWizStep4(); }
+
+function resetWizard() {
+  state.wizard = { step: 1, api: null, endpoint: null, results: null };
+  els.wizCustomUrl.value = '';
+  updateWizardNav();
 }
 
-function updateScanStatus() {
-  chrome.runtime.sendMessage({ type: 'getScanState' }, (response) => {
-    const state = response?.scanState || 'stopped';
-    status.textContent = `Background scan: ${state}.`; 
-    setScanControlState(state);
-  });
+// --- Landing / capture control -------------------------------------------
+
+function showDashboard(show) {
+  els.landing.classList.toggle('hidden', show);
+  els.dashboard.classList.toggle('hidden', !show);
+  els.stopCaptureBtn.classList.toggle('hidden', !show);
 }
 
-function loadAnalysis() {
-  result.innerHTML = '<p class="entry">Loading latest background findings...</p>';
-  chrome.runtime.sendMessage({ type: 'getAnalysis' }, (response) => {
-    if (!response?.analysis || response.analysis.length === 0) {
-      result.innerHTML = '<p class="entry">No vulnerability findings yet. Waiting for next background run.</p>';
-      return;
-    }
+async function refreshAll() {
+  const [trafficRes, discoveredRes, analysisRes, hostsRes, scanRes, rulesRes] = await Promise.all([
+    chrome.runtime.sendMessage({ type: 'getTraffic' }),
+    chrome.runtime.sendMessage({ type: 'getDiscoveredApis' }),
+    chrome.runtime.sendMessage({ type: 'getAnalysis' }),
+    chrome.runtime.sendMessage({ type: 'getHostAnalysis' }),
+    chrome.runtime.sendMessage({ type: 'getScanState' }),
+    chrome.runtime.sendMessage({ type: 'getCaptureRules' })
+  ]);
 
-    result.innerHTML = '<p class="entry">Latest vulnerability analysis (background):</p>';
-    response.analysis.forEach((item) => {
-      const block = document.createElement('div');
-      block.className = 'entry';
-      block.innerHTML = `<strong>${item.title || 'Finding'}</strong>: ${item.description || 'No description'}<br/><small>${item.evidence || ''}</small>`;
-      result.appendChild(block);
-    });
-  });
-}
+  state.traffic = trafficRes?.traffic || [];
+  state.discoveredApis = discoveredRes?.discoveredApis || [];
+  state.analysis = analysisRes?.analysis || [];
+  state.hosts = hostsRes?.hosts || [];
+  state.captureRules = rulesRes?.rules || [];
+  state.scanState = scanRes?.scanState || 'stopped';
 
-function downloadFile(filename, text) {
-  const element = document.createElement('a');
-  element.setAttribute('href', 'data:text/json;charset=utf-8,' + encodeURIComponent(text));
-  element.setAttribute('download', filename);
-  document.body.appendChild(element);
-  element.click();
-  document.body.removeChild(element);
-}
+  // Ensure UI state is updated
+  renderDiscoverAll();
+  renderSecurity();
+  renderRuleList();
+  if (state.activeMainTab === 'test') renderWizStep1();
+  const shouldShowDashboard = state.scanState === 'running' || (!state.forceLanding && state.traffic.length > 0);
+  showDashboard(shouldShowDashboard);
 
-function exportAnalysis() {
-  chrome.runtime.sendMessage({ type: 'getAnalysis' }, (response) => {
-    const data = response?.analysis || [];
-    downloadFile('boltclone-analysis.json', JSON.stringify({ exportedAt: new Date().toISOString(), analysis: data }, null, 2));
-    status.textContent = 'Analysis exported';
-  });
-}
-
-function exportOpenApi() {
-  chrome.runtime.sendMessage({ type: 'exportSpec' }, (response) => {
-    if (response?.spec) {
-      downloadFile('boltclone-openapi.json', JSON.stringify(response.spec, null, 2));
-      status.textContent = 'OpenAPI spec exported';
-    } else {
-      status.textContent = 'OpenAPI spec export failed';
-      console.error('exportSpec failed:', response);
-    }
-  });
-}
-
-function saveHistory(scan) {
-  chrome.storage.local.get({ scanHistory: [] }, ({ scanHistory }) => {
-    scanHistory.unshift({ ...scan, scannedAt: new Date().toISOString() });
-    scanHistory = scanHistory.slice(0, 10);
-    chrome.storage.local.set({ scanHistory });
-    renderHistory(scanHistory);
-  });
-}
-
-function normalizeUrl(value) {
+  // Prefill target URL input from stored origin or active tab when empty
   try {
-    if (!value.startsWith('http://') && !value.startsWith('https://')) {
-      value = `https://${value}`;
-    }
-    const parsed = new URL(value);
-    return `${parsed.protocol}//${parsed.host}`; // base URL only
-  } catch (error) {
-    return null;
-  }
-}
+    chrome.storage.local.get({ boltcloneTargetOrigin: null, boltcloneCaptureMode: 'api' }, ({ boltcloneTargetOrigin, boltcloneCaptureMode }) => {
+      state.captureMode = boltcloneCaptureMode || 'api';
+      // reflect capture mode in the UI
+      els.modeApi.classList.toggle('active', state.captureMode === 'api');
+      els.modeAll.classList.toggle('active', state.captureMode === 'all');
 
-function buildProxyUrl(targetUrl, proxyTemplate) {
-  if (!proxyTemplate) {
-    return targetUrl;
-  }
-
-  if (proxyTemplate.includes('{url}')) {
-    return proxyTemplate.replace('{url}', encodeURIComponent(targetUrl));
-  }
-
-  try {
-    const proxy = new URL(proxyTemplate);
-    const result = new URL(proxy);
-    if (result.search) {
-      result.searchParams.set('url', targetUrl);
-    } else {
-      result.search = `?url=${encodeURIComponent(targetUrl)}`;
-    }
-    return result.toString();
-  } catch (error) {
-    return targetUrl;
-  }
-}
-
-function timeoutFetch(url, opts = {}, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
-    fetch(url, opts)
-      .then((resp) => {
-        clearTimeout(timer);
-        resolve(resp);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-  });
-}
-
-async function runRateLimitTest(url) {
-  const resolve = getFetchUrl(url);
-  const requests = Array.from({ length: 8 }, () => timeoutFetch(resolve, { method: 'GET', mode: 'cors' }, 10000).catch((err) => err));
-  const results = await Promise.all(requests);
-  const statuses = results
-    .filter((r) => r instanceof Response)
-    .map((r) => r.status);
-
-  const has429 = statuses.includes(429);
-  const successCount = statuses.filter((s) => s >= 200 && s < 300).length;
-  return { has429, successCount, statuses };
-}
-
-function isNumericSegment(pathSegment) {
-  return /^[0-9]+$/.test(pathSegment);
-}
-
-async function runIdorBolaTest(url) {
-  try {
-    const target = new URL(url);
-    const segments = target.pathname.split('/').filter(Boolean);
-    const numericIndex = segments.findIndex(isNumericSegment);
-    if (numericIndex === -1) {
-      return null;
-    }
-
-    const originalValue = segments[numericIndex];
-    const altValues = [String(Number(originalValue) + 1), String(Math.max(1, Number(originalValue) - 1))];
-
-    const originalUrl = target.toString();
-    const originalResp = await timeoutFetch(getFetchUrl(originalUrl), { method: 'GET', mode: 'cors' }, 10000).catch(() => null);
-    if (!originalResp || originalResp.status < 200 || originalResp.status >= 300) {
-      return null; // cannot confirm if endpoint not accessible
-    }
-
-    const altResults = [];
-    for (const alt of altValues) {
-      const trial = new URL(target.toString());
-      trial.pathname = target.pathname.replace(`/${originalValue}`, `/${alt}`);
-      const r = await timeoutFetch(getFetchUrl(trial.toString()), { method: 'GET', mode: 'cors' }, 10000).catch(() => null);
-      altResults.push({ alt, status: r ? r.status : 0 });
-    }
-
-    const tooManyHits = altResults.filter((r) => r.status >= 200 && r.status < 300).length;
-    if (tooManyHits > 0) {
-      return {
-        idor: true,
-        evidence: `${altResults.map((i) => `${i.alt}:${i.status}`).join(', ')}`
-      };
-    }
-
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function runSqlInjectionTest(url) {
-  try {
-    const target = new URL(url);
-    target.searchParams.set('q', "' OR '1'='1");
-    const resp = await timeoutFetch(getFetchUrl(target.toString()), { method: 'GET', mode: 'cors' }, 10000).catch(() => null);
-    if (!resp) return null;
-
-    if (resp.status >= 200 && resp.status < 300) {
-      const text = await resp.text();
-      if (text.toLowerCase().includes('sql') || text.toLowerCase().includes('syntax error')) {
-        return { sql: true, evidence: `Injected query returned ${resp.status} with SQL keywords in response` };
-      }
-      return { sql: true, evidence: `Injected query returned ${resp.status}` };
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function runXssTest(url) {
-  try {
-    const target = new URL(url);
-    target.searchParams.set('q', '<script>alert(1)</script>');
-    const resp = await timeoutFetch(getFetchUrl(target.toString()), { method: 'GET', mode: 'cors' }, 10000).catch(() => null);
-    if (!resp || resp.status < 200 || resp.status >= 300) return null;
-
-    const text = await resp.text();
-    if (text.includes('<script>alert(1)</script>') || text.toLowerCase().includes('script>alert')) {
-      return { xss: true, evidence: 'Reflected XSS payload appears in response body.' };
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function runSecurityHeadersTest(url) {
-  try {
-    const resp = await timeoutFetch(getFetchUrl(url), { method: 'GET', mode: 'cors' }, 10000).catch(() => null);
-    if (!resp) return null;
-
-    const headers = {
-      xFrame: resp.headers.get('x-frame-options'),
-      csp: resp.headers.get('content-security-policy'),
-      hsts: resp.headers.get('strict-transport-security'),
-      xssProtection: resp.headers.get('x-xss-protection'),
-      referrerPolicy: resp.headers.get('referrer-policy')
-    };
-
-    const missing = Object.entries(headers).filter(([, v]) => !v).map(([k]) => k);
-    if (missing.length > 0) {
-      return { secheaders: true, evidence: `Missing security headers: ${missing.join(', ')}` };
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function runCsrfTest(url) {
-  try {
-    const target = new URL(url);
-    target.pathname = '/';
-    const resp = await timeoutFetch(getFetchUrl(target.toString()), { method: 'OPTIONS', mode: 'cors' }, 10000).catch(() => null);
-    if (!resp) return null;
-
-    const allow = resp.headers.get('access-control-allow-methods') || '';
-    if (allow.includes('PUT') || allow.includes('DELETE') || allow.includes('POST')) {
-      return { csrf: true, evidence: `CORS allows stateful methods: ${allow}` };
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function runSsrfTest(url) {
-  try {
-    const target = new URL(url);
-    target.searchParams.set('target', 'http://169.254.169.254/latest/meta-data/');
-    const resp = await timeoutFetch(getFetchUrl(target.toString()), { method: 'GET', mode: 'cors' }, 10000).catch(() => null);
-    if (!resp || resp.status < 200 || resp.status >= 300) return null;
-
-    const text = await resp.text();
-    if (text.length > 10 || text.toLowerCase().includes('meta-data')) {
-      return { ssrf: true, evidence: 'SSRF-like request returned potential metadata results.' };
-    }
-    return null;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function runEndpointsDiscovery(base) {
-  const endpoints = ['/api', '/health', '/status', '/login', '/admin', '/openapi.json', '/swagger.json'];
-  const found = [];
-  for (const path of endpoints) {
-    const url = `${base.replace(/\/+$/, '')}${path}`;
-    const resp = await timeoutFetch(getFetchUrl(url), { method: 'GET', mode: 'cors' }, 6000).catch(() => null);
-    if (resp && resp.status >= 200 && resp.status < 300) {
-      found.push({ path, status: resp.status });
-    }
-  }
-  return found;
-}
-
-async function scanTarget(rawTarget) {
-  const target = normalizeUrl(rawTarget);
-  const findings = [];
-  if (!target) {
-    return {
-      target: rawTarget,
-      status: 'failed',
-      score: 0,
-      owaspCoverage: 0,
-      vulns: [{ title: 'Invalid target', severity: 'low', description: 'Target URL is invalid.', evidence: rawTarget }]
-    };
-  }
-
-  let baseResponse = null;
-  let corsBlocked = false;
-
-  try {
-    baseResponse = await timeoutFetch(getFetchUrl(target), { method: 'GET', mode: 'cors' }, 10000);
-  } catch (error) {
-    if (error instanceof TypeError && error.message.toLowerCase().includes('cors')) {
-      corsBlocked = true;
-    }
-  }
-
-  if (corsBlocked) {
-    findings.push({ title: 'CORS Policy prevents in-browser API access', severity: 'medium', description: 'Target API rejects cross-site requests from untrusted origins.', evidence: 'Fetch TypeError from browser CORS enforcement.' });
-  }
-
-  if (!baseResponse) {
-    return {
-      target,
-      status: 'failed',
-      score: 20,
-      owaspCoverage: 0,
-      vulns: findings
-    };
-  }
-
-  if (baseResponse.status === 401 || baseResponse.status === 403) {
-    findings.push({ title: 'Authentication/Authorization observed', severity: 'low', description: 'API returns 401/403 without credentials.', evidence: `Status ${baseResponse.status}` });
-  } else if (baseResponse.status >= 500) {
-    findings.push({ title: 'Server error response', severity: 'high', description: 'Target returns 5xx status on unauthenticated request.', evidence: `Status ${baseResponse.status}` });
-  }
-
-  const shouldDoRateLimit = document.getElementById('chRateLimit').checked;
-  const shouldDoIdor = document.getElementById('chIdor').checked;
-  const shouldDoSql = document.getElementById('chSql').checked;
-  const shouldDoXss = document.getElementById('chXss').checked;
-  const shouldDoCsrf = document.getElementById('chCsrf').checked;
-  const shouldDoSsrf = document.getElementById('chSsrf').checked;
-  const shouldDoSecHeaders = document.getElementById('chSecHeaders').checked;
-
-  if (shouldDoRateLimit) {
-    const rateLimitResult = await runRateLimitTest(target);
-    if (rateLimitResult.has429) {
-      findings.push({ title: 'Rate limiting enforced', severity: 'low', description: 'HTTP 429 was returned while sending repeated requests.', evidence: `Response statuses: ${rateLimitResult.statuses.join(', ')}` });
-    } else if (rateLimitResult.successCount > 3) {
-      findings.push({ title: 'No rate-limiting detected', severity: 'medium', description: 'No HTTP 429 seen in rapid request burst.', evidence: `Response statuses: ${rateLimitResult.statuses.join(', ')}` });
-    }
-  }
-
-  if (shouldDoIdor) {
-    const idorResult = await runIdorBolaTest(target);
-    if (idorResult) {
-      findings.push({ title: 'Potential IDOR/BOLA', severity: 'high', description: 'Similar object IDs were accessible without authorization checks.', evidence: idorResult.evidence });
-    }
-  }
-
-  if (shouldDoSql) {
-    const sqlResult = await runSqlInjectionTest(target);
-    if (sqlResult) {
-      findings.push({ title: 'Potential SQL Injection endpoint', severity: 'high', description: 'Query injection payload accepted or produced indicators in response.', evidence: sqlResult.evidence });
-    }
-  }
-
-  if (shouldDoXss) {
-    const xssResult = await runXssTest(target);
-    if (xssResult) {
-      findings.push({ title: 'Potential XSS vulnerability', severity: 'high', description: 'Reflected script payload appeared in response body.', evidence: xssResult.evidence });
-    }
-  }
-
-  if (shouldDoCsrf) {
-    const csrfResult = await runCsrfTest(target);
-    if (csrfResult) {
-      findings.push({ title: 'Potential CSRF risk', severity: 'medium', description: 'State-changing methods allowed via CORS preflight.', evidence: csrfResult.evidence });
-    }
-  }
-
-  if (shouldDoSsrf) {
-    const ssrfResult = await runSsrfTest(target);
-    if (ssrfResult) {
-      findings.push({ title: 'Potential SSRF threat', severity: 'high', description: 'Injected URL query may reveal internal metadata content.', evidence: ssrfResult.evidence });
-    }
-  }
-
-  if (shouldDoSecHeaders) {
-    const headerResult = await runSecurityHeadersTest(target);
-    if (headerResult) {
-      findings.push({ title: 'Security headers missing', severity: 'medium', description: 'Critical response headers are not set.', evidence: headerResult.evidence });
-    }
-  }
-
-  const discoveredEndpoints = await runEndpointsDiscovery(target);
-  if (discoveredEndpoints.length > 0) {
-    findings.push({ title: 'Common endpoint discovery', severity: 'low', description: `Found available endpoints: ${discoveredEndpoints.map((e) => e.path).join(', ')}`, evidence: `Endpoints statuses: ${discoveredEndpoints.map((e) => `${e.path}:${e.status}`).join(', ')}` });
-  }
-
-  const owaspCoverage = Math.max(0, 10 - findings.length);
-  const score = Math.max(10, 100 - findings.length * 18);
-
-  return {
-    target,
-    status: 'complete',
-    score,
-    owaspCoverage,
-    vulns: findings
-  };
-}
-
-async function doScan(rawTarget) {
-  if (status) status.textContent = `Scanning ${rawTarget} ...`;
-  const scan = await scanTarget(rawTarget);
-  const enriched = await aiEnrichScan(scan);
-  renderResult(enriched);
-  saveHistory(enriched);
-  if (status) status.textContent = `Last scan complete: ${scan.target}`;
-  return enriched;
-}
-
-async function doScanAll() {
-  scanButton.disabled = true;
-  fromTabButton.disabled = true;
-  result.innerHTML = '<p class="entry">Running discovery/scan across selected targets...</p>';
-
-  const targets = new Set();
-  const manual = targetInput.value.trim();
-  if (manual) {
-    const normalized = normalizeUrl(manual);
-    if (normalized) targets.add(normalized);
-  }
-
-  const useCurrent = scanCurrentTab.checked;
-  const useAllTabs = scanAllTabs.checked;
-
-  if (useCurrent || useAllTabs) {
-    const query = useAllTabs ? { currentWindow: true } : { active: true, currentWindow: true };
-    const tabs = await new Promise((resolve) => chrome.tabs.query(query, resolve));
-    tabs.forEach((tab) => {
-      if (tab?.url) {
-        const normalized = normalizeUrl(tab.url);
-        if (normalized) targets.add(normalized);
+      if (boltcloneTargetOrigin) {
+        // set the field to the saved origin
+        if (els.targetUrl) els.targetUrl.value = boltcloneTargetOrigin;
+      } else {
+        // if no saved origin and the input is empty, try to prefill from the active tab
+        if (els.targetUrl && !els.targetUrl.value.trim()) {
+          try {
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+              const t = tabs && tabs[0];
+              if (t && t.url) {
+                const n = normalizeUrl(t.url);
+                if (n) els.targetUrl.value = n;
+              }
+            });
+          } catch (e) {
+            // ignore tab lookup errors
+          }
+        }
       }
     });
-  }
-
-  if (targets.size === 0) {
-    result.innerHTML = '<p class="entry">No URLs available to scan. Fill target or select tab options.</p>';
-    scanButton.disabled = false;
-    fromTabButton.disabled = false;
-    return;
-  }
-
-  let first = true;
-  for (const t of targets) {
-    const scan = await scanTarget(t);
-    const enriched = await aiEnrichScan(scan);
-    renderResult(enriched, !first);
-    saveHistory(enriched);
-    first = false;
-  }
-
-  scanButton.disabled = false;
-  fromTabButton.disabled = false;
-}
-
-scanButton.addEventListener('click', () => doScanAll());
-
-fromTabButton.addEventListener('click', () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-    if (tab?.url) {
-      targetInput.value = tab.url;
-      doScan(tab.url);
-    } else {
-      result.innerHTML = '<p class="entry">No active tab URL available.</p>';
-    }
-  });
-});
-
-if (modeApiButton) {
-  modeApiButton.addEventListener('click', () => setCaptureMode('api'));
-}
-if (modeAllButton) {
-  modeAllButton.addEventListener('click', () => setCaptureMode('all'));
-}
-
-function setScanControlState(scanState) {
-  const running = scanState === 'running';
-  if (startBgScanButton) {
-    startBgScanButton.disabled = running;
-    startBgScanButton.textContent = running ? 'Background Scan Running' : 'Start Background Scan';
-    startBgScanButton.classList.toggle('disabled', running);
-  }
-  if (stopBgScanButton) {
-    stopBgScanButton.disabled = !running;
-    stopBgScanButton.textContent = running ? 'Stop Background Scan' : 'Background Scan Stopped';
-    stopBgScanButton.classList.toggle('disabled', !running);
-  }
-}
-
-if (startBgScanButton) {
-  startBgScanButton.addEventListener('click', () => {
-    startBgScanButton.disabled = true;
-    stopBgScanButton.disabled = false;
-    setScanControlState('running');
-    chrome.runtime.sendMessage({ type: 'startScan' }, (resp) => {
-      status.textContent = 'Background scanning is active. Traffic is being tracked automatically.';
-      console.log('startScan', resp);
-    });
-  });
-}
-
-if (stopBgScanButton) {
-  stopBgScanButton.addEventListener('click', () => {
-    stopBgScanButton.disabled = true;
-    startBgScanButton.disabled = false;
-    setScanControlState('stopped');
-    chrome.runtime.sendMessage({ type: 'stopScan' }, (resp) => {
-      status.textContent = 'Background scanning stopped.';
-      console.log('stopScan', resp);
-    });
-  });
-}
-
-if (openSidePanelButton) {
-  openSidePanelButton.addEventListener('click', openSidePanel);
-}
-
-if (exportAnalysisButton) {
-  exportAnalysisButton.addEventListener('click', exportAnalysis);
-}
-
-if (exportOpenApiButton) {
-  exportOpenApiButton.addEventListener('click', exportOpenApi);
-}
-
-allTrafficProxy.addEventListener('click', async () => {
-  const proxyUrl = proxyInput.value.trim();
-  if (!proxyUrl) {
-    result.innerHTML = '<p class="entry">Define proxy URL first for global traffic.</p>';
-    return;
-  }
-
-  try {
-    const rule = {
-      mode: 'fixed_servers',
-      rules: {
-        proxyForHttp: { scheme: new URL(proxyUrl).protocol.replace(':', ''), host: new URL(proxyUrl).hostname, port: Number(new URL(proxyUrl).port || (new URL(proxyUrl).protocol === 'https:' ? 443 : 80)) },
-        proxyForHttps: { scheme: new URL(proxyUrl).protocol.replace(':', ''), host: new URL(proxyUrl).hostname, port: Number(new URL(proxyUrl).port || (new URL(proxyUrl).protocol === 'https:' ? 443 : 80)) },
-        bypassList: ['<local>']
-      }
-    };
-
-    await chrome.proxy.settings.set({ value: rule, scope: 'regular' });
-    result.innerHTML = '<p class="entry">Global proxy enabled for browser traffic.</p>';
   } catch (e) {
-    result.innerHTML = `<p class="entry">Global proxy set failed: ${e.message}</p>`;
+    // ignore storage read errors
   }
-});
+}
 
-chrome.storage.local.get({ scanHistory: [] }, ({ scanHistory }) => renderHistory(scanHistory));
+// --- Event wiring ----------------------------------------------------
 
-if (refreshDiscovery) {
-  refreshDiscovery.addEventListener('click', () => {
-    setActivePage('discoveryPage');
-    loadDiscoveredApis();
+function addRuleFromInput() {
+  const value = els.newRuleInput.value.trim();
+  if (!value) return;
+  chrome.runtime.sendMessage({ type: 'addCaptureRule', value }, (res) => {
+    if (res?.rules) {
+      state.captureRules = res.rules;
+      els.newRuleInput.value = '';
+      renderRuleList();
+    }
   });
 }
 
-if (tabButtons) {
-  tabButtons.forEach((btn) => {
-    btn.addEventListener('click', () => setActivePage(btn.dataset.target));
+function renderRuleList() {
+  if (!els.ruleList) return;
+  if (!state.captureRules.length) {
+    els.ruleList.innerHTML = '<div class="empty-state">No capture rules yet. Add a hostname, origin, path, or wildcard.</div>';
+    return;
+  }
+
+  els.ruleList.innerHTML = state.captureRules.map((rule) => {
+    const status = rule.enabled ? 'enabled' : 'disabled';
+    return `<div class="card rule-card ${status}" data-rule-id="${escapeHtml(rule.id)}">
+      <div class="row1">
+        <div class="rule-value">${escapeHtml(rule.value)}</div>
+        <div class="rule-actions">
+          <button class="btn pill tiny toggle-rule" data-rule-id="${escapeHtml(rule.id)}">${rule.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="btn pill danger tiny remove-rule" data-rule-id="${escapeHtml(rule.id)}">Remove</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function setMode(mode) {
+  state.captureMode = mode;
+  els.modeApi.classList.toggle('active', mode === 'api');
+  els.modeAll.classList.toggle('active', mode === 'all');
+  chrome.runtime.sendMessage({ type: 'setCaptureMode', mode });
+}
+
+function wireThemeToggle() {
+  safeListen(els.themeToggle, 'click', () => {
+    darkTheme = !darkTheme;
+    document.documentElement.dataset.theme = darkTheme ? 'dark' : 'light';
+    if (els.themeToggle) els.themeToggle.innerHTML = darkTheme ? '&#127769;' : '&#9728;';
   });
 }
 
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.discoveredApis) {
-    renderDiscoveredApis(changes.discoveredApis.newValue || []);
-  }
-  if (changes.scanHistory) {
-    renderHistory(changes.scanHistory.newValue || []);
-  }
-  if (changes.boltcloneAnalysis) {
-    loadAnalysis();
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (changes.boltcloneTraffic || changes.discoveredApis || changes.boltcloneAnalysis || changes.boltcloneCaptureRules) {
+    refreshAll();
   }
 });
 
-setActivePage('capturePage');
-loadDiscoveredApis();
-updateScanStatus();
-loadAnalysis();
+function prefillTargetFromActiveTab() {
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    if (tab?.url && !els.targetUrl.value.trim()) {
+      const origin = normalizeUrl(tab.url);
+      if (origin) els.targetUrl.value = origin;
+    }
+  });
+}
 
-chrome.runtime.sendMessage({ type: 'getCaptureMode' }, (response) => {
-  updateCaptureModeUi(response?.mode || 'api');
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    initPopup();
+    prefillTargetFromActiveTab();
+    refreshAll();
+    setInterval(refreshAll, 4000);
+  } catch (err) {
+    console.error('popup init failed', err);
+  }
 });
-
-setInterval(() => {
-  updateScanStatus();
-  loadDiscoveredApis();
-  loadAnalysis();
-}, 3000);

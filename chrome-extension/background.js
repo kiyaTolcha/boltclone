@@ -1,17 +1,70 @@
 const DISCOVERED_API_KEY = 'discoveredApis';
 const MAX_DISCOVERED = 300;
 const STATS_KEY = 'boltcloneTraffic';
+const CAPTURE_RULES_KEY = 'boltcloneCaptureRules';
 
 // load logic modules in service worker environment (import() is disallowed there)
 importScripts('rules.js', 'openapi.js');
 
 let captureMode = 'api';
+let targetOrigin = null;
+let captureRules = [];
 
 function loadCaptureMode() {
-  chrome.storage.local.get({ boltcloneCaptureMode: 'api' }, ({ boltcloneCaptureMode }) => {
+  chrome.storage.local.get({ boltcloneCaptureMode: 'api', boltcloneTargetOrigin: null, boltcloneCaptureRules: [] }, ({ boltcloneCaptureMode, boltcloneTargetOrigin, boltcloneCaptureRules }) => {
     captureMode = boltcloneCaptureMode || 'api';
-    console.log('Background capture mode set:', captureMode);
+    targetOrigin = boltcloneTargetOrigin || null;
+    captureRules = Array.isArray(boltcloneCaptureRules) ? boltcloneCaptureRules : [];
+    console.log('Background capture mode set:', captureMode, 'target:', targetOrigin, 'rules:', captureRules.length);
   });
+}
+
+function normalizeRulePattern(value) {
+  if (!value || typeof value !== 'string') return null;
+  return value.trim();
+}
+
+function captureRuleMatches(url, rule) {
+  if (!rule || !rule.enabled) return false;
+  const pattern = normalizeRulePattern(rule.value);
+  if (!pattern) return false;
+  try {
+    const targetUrl = new URL(url);
+    // Exact origin match or an origin/path prefix
+    if (pattern.includes('://')) {
+      const ruleUrl = new URL(pattern);
+      if (ruleUrl.pathname === '/' || ruleUrl.pathname === '') {
+        return targetUrl.origin === ruleUrl.origin;
+      }
+      return targetUrl.href.startsWith(ruleUrl.href.replace(/\/?$/, ''));
+    }
+    // Wildcard origin matching
+    if (pattern.includes('*')) {
+      const regex = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*') + '$', 'i');
+      return regex.test(targetUrl.href) || regex.test(targetUrl.origin) || regex.test(targetUrl.host);
+    }
+    if (pattern.startsWith('/')) {
+      return targetUrl.pathname.startsWith(pattern);
+    }
+    if (pattern.includes('/')) {
+      return targetUrl.href.includes(pattern);
+    }
+    return targetUrl.host === pattern || targetUrl.host.endsWith(`.${pattern}`) || targetUrl.origin.includes(pattern);
+  } catch {
+    return url.includes(pattern);
+  }
+}
+
+function matchesTarget(url) {
+  if (!url) return false;
+  try {
+    if (captureRules.some((rule) => captureRuleMatches(url, rule))) return true;
+    if (targetOrigin && new URL(url).origin === targetOrigin) return true;
+    if (!targetOrigin) return isLikelyApiRequest(url);
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function scheduleScan() {
@@ -127,7 +180,7 @@ chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : isLikelyApiRequest(details.url);
+    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
     if (!shouldCapture) return;
 
     const body = details.requestBody;
@@ -148,11 +201,34 @@ chrome.webRequest.onBeforeRequest.addListener(
   ['requestBody']
 );
 
+chrome.webRequest.onSendHeaders.addListener(
+  (details) => {
+    if (!details.url || details.method === 'OPTIONS') return;
+
+    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
+    if (!shouldCapture) return;
+
+    saveTraffic({
+      id: details.requestId,
+      type: 'headers',
+      timestamp: new Date().toISOString(),
+      url: details.url,
+      method: details.method,
+      requestHeaders: details.requestHeaders || [],
+      tabId: details.tabId
+    });
+
+    console.log('Captured request headers', details.url, 'method', details.method);
+  },
+  { urls: ['<all_urls>'] },
+  ['requestHeaders', 'extraHeaders']
+);
+
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : isLikelyApiRequest(details.url);
+    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
     if (!shouldCapture) return;
 
     saveTraffic({
@@ -176,12 +252,12 @@ chrome.runtime.onInstalled.addListener(async () => {
   chrome.storage.local.set({ [DISCOVERED_API_KEY]: [] });
   loadCaptureMode();
 
-  if (chrome.sidePanel?.setOptions) {
+  if (chrome.sidePanel?.setPanelBehavior) {
     try {
-      await chrome.sidePanel.setOptions({ path: 'panel.html', enabled: true });
-      console.log('Side panel configured on install');
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+      console.log('Side panel configured to open on action click');
     } catch (err) {
-      console.warn('Failed to set sidePanel options:', err);
+      console.warn('Failed to set side panel behavior:', err);
     }
   }
 });
@@ -196,7 +272,7 @@ chrome.webRequest.onCompleted.addListener(
   async (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : isLikelyApiRequest(details.url);
+    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
     if (!shouldCapture) return;
 
     const candidate = extractCandidate(details.url);
@@ -213,38 +289,6 @@ chrome.webRequest.onCompleted.addListener(
   },
   { urls: ['<all_urls>'] }
 );
-
-chrome.action.onClicked?.addListener?.(async () => {
-  const sidePanelAvailable = !!chrome.sidePanel?.open;
-
-  if (chrome.sidePanel?.setOptions) {
-    try {
-      await chrome.sidePanel.setOptions({ path: 'panel.html', enabled: true });
-      console.log('sidePanel options set successfully.');
-    } catch (err) {
-      console.warn('sidePanel.setOptions failed:', err);
-    }
-  }
-
-  if (sidePanelAvailable) {
-    try {
-      await chrome.sidePanel.open({});
-      console.log('sidePanel opened successfully.');
-      return;
-    } catch (err) {
-      console.warn('sidePanel.open failed:', err);
-    }
-  }
-
-  // Fallback for browsers that don't support sidePanel (or if open fails): open panel.html in a tab
-  try {
-    const panelUrl = chrome.runtime.getURL('panel.html');
-    await chrome.tabs.create({ url: panelUrl });
-    console.log('Fallback tab opened:', panelUrl);
-  } catch (err) {
-    console.error('Failed to open fallback panel tab:', err);
-  }
-});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return;
@@ -286,9 +330,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'setTargetOrigin') {
+    targetOrigin = message.origin || null;
+    chrome.storage.local.set({ boltcloneTargetOrigin: targetOrigin }, () => {
+      console.log('Target origin updated to', targetOrigin);
+      sendResponse({ origin: targetOrigin });
+    });
+    return true;
+  }
+
   if (message.type === 'getCaptureMode') {
     chrome.storage.local.get({ boltcloneCaptureMode: 'api' }, ({ boltcloneCaptureMode }) => {
       sendResponse({ mode: boltcloneCaptureMode || 'api' });
+    });
+    return true;
+  }
+
+  if (message.type === 'getCaptureRules') {
+    chrome.storage.local.get({ [CAPTURE_RULES_KEY]: [] }, (data) => {
+      sendResponse({ rules: data[CAPTURE_RULES_KEY] || [] });
+    });
+    return true;
+  }
+
+  if (message.type === 'addCaptureRule') {
+    const ruleValue = typeof message.value === 'string' ? message.value.trim() : '';
+    if (!ruleValue) {
+      sendResponse({ error: 'Rule value is required.' });
+      return true;
+    }
+    const newRule = { id: crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`, value: ruleValue, enabled: true };
+    chrome.storage.local.get({ [CAPTURE_RULES_KEY]: [] }, ({ boltcloneCaptureRules }) => {
+      const next = [newRule, ...(Array.isArray(boltcloneCaptureRules) ? boltcloneCaptureRules : [])].slice(0, 100);
+      chrome.storage.local.set({ [CAPTURE_RULES_KEY]: next }, () => {
+        captureRules = next;
+        sendResponse({ rule: newRule, rules: next });
+      });
+    });
+    return true;
+  }
+
+  if (message.type === 'removeCaptureRule') {
+    const ruleId = message.id;
+    chrome.storage.local.get({ [CAPTURE_RULES_KEY]: [] }, ({ boltcloneCaptureRules }) => {
+      const next = (boltcloneCaptureRules || []).filter((rule) => rule.id !== ruleId);
+      chrome.storage.local.set({ [CAPTURE_RULES_KEY]: next }, () => {
+        captureRules = next;
+        sendResponse({ rules: next });
+      });
+    });
+    return true;
+  }
+
+  if (message.type === 'toggleCaptureRule') {
+    const ruleId = message.id;
+    chrome.storage.local.get({ [CAPTURE_RULES_KEY]: [] }, ({ boltcloneCaptureRules }) => {
+      const next = (boltcloneCaptureRules || []).map((rule) => rule.id === ruleId ? { ...rule, enabled: !rule.enabled } : rule);
+      chrome.storage.local.set({ [CAPTURE_RULES_KEY]: next }, () => {
+        captureRules = next;
+        sendResponse({ rules: next });
+      });
     });
     return true;
   }
@@ -312,6 +413,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (err) {
       sendResponse({ error: err?.message || String(err) });
     }
+    return true;
+  }
+
+  if (message.type === 'getHostAnalysis') {
+    chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
+      const hosts = typeof analyzeHosts === 'function' ? analyzeHosts(boltcloneTraffic || []) : [];
+      sendResponse({ hosts });
+    });
     return true;
   }
 });
