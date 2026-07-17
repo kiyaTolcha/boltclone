@@ -12,7 +12,7 @@ function initPopup() {
   document.querySelectorAll('[id]').forEach((node) => { els[node.id] = node; });
 
   const missingEls = [];
-  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','themeToggle'].forEach((id) => {
+  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','exportCsv','themeToggle'].forEach((id) => {
     if (!els[id]) missingEls.push(id);
   });
   console.log('popup.js init: missing elements', missingEls);
@@ -241,6 +241,22 @@ function wireEvents() {
       if (r?.spec) downloadFile('boltclone-openapi.json', JSON.stringify(r.spec, null, 2));
     });
   });
+
+  safeListen(els.exportCsv, 'click', () => {
+    chrome.runtime.sendMessage({ type: 'getAnalysis' }, (r) => {
+      const rows = (r?.analysis || []).map((item) => ({
+        Type: item.type || '',
+        Severity: item.severity || '',
+        Message: item.message || '',
+        URL: item.url || '',
+        Method: item.method || '',
+        StatusCode: item.statusCode || '',
+        Timestamp: item.timestamp || ''
+      }));
+      const csv = generateCsv(rows);
+      downloadFile('boltclone-report.csv', csv);
+    });
+  });
 }
 
 function timeoutFetch(url, opts = {}, timeoutMs = 10000) {
@@ -263,11 +279,28 @@ function normalizeUrl(value) {
 
 function downloadFile(filename, text) {
   const a = document.createElement('a');
-  a.setAttribute('href', 'data:text/json;charset=utf-8,' + encodeURIComponent(text));
+  const mime = filename.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'text/json;charset=utf-8';
+  a.setAttribute('href', `data:${mime},` + encodeURIComponent(text));
   a.setAttribute('download', filename);
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+}
+
+function csvEscape(value) {
+  if (value == null) return '';
+  const text = String(value).replace(/"/g, '""');
+  return `"${text}"`;
+}
+
+function generateCsv(rows) {
+  if (!rows || !rows.length) return '';
+  const headers = Object.keys(rows[0]);
+  const lines = [headers.map(csvEscape).join(',')];
+  rows.forEach((row) => {
+    lines.push(headers.map((header) => csvEscape(row[header])).join(','));
+  });
+  return lines.join('\n');
 }
 
 function escapeHtml(str) {
@@ -824,14 +857,18 @@ function showDashboard(show) {
   els.stopCaptureBtn.classList.toggle('hidden', !show);
 }
 
+function sendMessageAsync(message) {
+  return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
+}
+
 async function refreshAll() {
   const [trafficRes, discoveredRes, analysisRes, hostsRes, scanRes, rulesRes] = await Promise.all([
-    chrome.runtime.sendMessage({ type: 'getTraffic' }),
-    chrome.runtime.sendMessage({ type: 'getDiscoveredApis' }),
-    chrome.runtime.sendMessage({ type: 'getAnalysis' }),
-    chrome.runtime.sendMessage({ type: 'getHostAnalysis' }),
-    chrome.runtime.sendMessage({ type: 'getScanState' }),
-    chrome.runtime.sendMessage({ type: 'getCaptureRules' })
+    sendMessageAsync({ type: 'getTraffic' }),
+    sendMessageAsync({ type: 'getDiscoveredApis' }),
+    sendMessageAsync({ type: 'getAnalysis' }),
+    sendMessageAsync({ type: 'getHostAnalysis' }),
+    sendMessageAsync({ type: 'getScanState' }),
+    sendMessageAsync({ type: 'getCaptureRules' })
   ]);
 
   state.traffic = trafficRes?.traffic || [];
