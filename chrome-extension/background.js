@@ -9,14 +9,21 @@ importScripts('rules.js', 'openapi.js');
 let captureMode = 'api';
 let targetOrigin = null;
 let captureRules = [];
+let captureEnabled = false;
 
 function loadCaptureMode() {
-  chrome.storage.local.get({ boltcloneCaptureMode: 'api', boltcloneTargetOrigin: null, boltcloneCaptureRules: [] }, ({ boltcloneCaptureMode, boltcloneTargetOrigin, boltcloneCaptureRules }) => {
+  chrome.storage.local.get({ boltcloneCaptureMode: 'api', boltcloneTargetOrigin: null, boltcloneCaptureRules: [], boltcloneScanState: 'stopped' }, ({ boltcloneCaptureMode, boltcloneTargetOrigin, boltcloneCaptureRules, boltcloneScanState }) => {
     captureMode = boltcloneCaptureMode || 'api';
     targetOrigin = boltcloneTargetOrigin || null;
     captureRules = Array.isArray(boltcloneCaptureRules) ? boltcloneCaptureRules : [];
-    console.log('Background capture mode set:', captureMode, 'target:', targetOrigin, 'rules:', captureRules.length);
+    captureEnabled = boltcloneScanState === 'running';
+    console.log('Background capture mode set:', captureMode, 'target:', targetOrigin, 'rules:', captureRules.length, 'enabled:', captureEnabled);
   });
+}
+
+function shouldCaptureTraffic(url) {
+  if (!captureEnabled || !url) return false;
+  return captureMode === 'all' ? true : matchesTarget(url);
 }
 
 function normalizeRulePattern(value) {
@@ -180,8 +187,7 @@ chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
-    if (!shouldCapture) return;
+    if (!shouldCaptureTraffic(details.url)) return;
 
     const body = details.requestBody;
 
@@ -205,8 +211,7 @@ chrome.webRequest.onSendHeaders.addListener(
   (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
-    if (!shouldCapture) return;
+    if (!shouldCaptureTraffic(details.url)) return;
 
     saveTraffic({
       id: details.requestId,
@@ -228,8 +233,7 @@ chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
-    if (!shouldCapture) return;
+    if (!shouldCaptureTraffic(details.url)) return;
 
     saveTraffic({
       id: details.requestId,
@@ -272,8 +276,7 @@ chrome.webRequest.onCompleted.addListener(
   async (details) => {
     if (!details.url || details.method === 'OPTIONS') return;
 
-    const shouldCapture = captureMode === 'all' ? true : matchesTarget(details.url);
-    if (!shouldCapture) return;
+    if (!shouldCaptureTraffic(details.url)) return;
 
     const candidate = extractCandidate(details.url);
     if (!candidate) return;
@@ -300,17 +303,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'startScan') {
     scheduleScan();
+    captureEnabled = true;
     chrome.storage.local.set({ boltcloneScanState: 'running' });
     analyzeNow();
     sendResponse({ status: 'scheduled' });
-    return true;
+    return;
   }
 
   if (message.type === 'stopScan') {
     stopScheduledScan();
+    captureEnabled = false;
     chrome.storage.local.set({ boltcloneScanState: 'stopped' });
     sendResponse({ status: 'cancelled' });
-    return true;
+    return;
   }
 
   if (message.type === 'getScanState') {

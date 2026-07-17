@@ -12,7 +12,7 @@ function initPopup() {
   document.querySelectorAll('[id]').forEach((node) => { els[node.id] = node; });
 
   const missingEls = [];
-  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','exportCsv','themeToggle'].forEach((id) => {
+  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','exportCsv','wzRateLimit','wzIdor','wzSql','wzXss','wzCsrf','wzSsrf','wzSecHeaders','wzOpenRedirect','wzCors','wzTraversal','themeToggle'].forEach((id) => {
     if (!els[id]) missingEls.push(id);
   });
   console.log('popup.js init: missing elements', missingEls);
@@ -62,8 +62,8 @@ function wireEvents() {
     state.forceLanding = false;
     const typed = els.targetUrl?.value?.trim ? els.targetUrl.value.trim() : '';
     const origin = state.captureMode === 'api' && typed ? normalizeUrl(typed) : null;
-    chrome.runtime.sendMessage({ type: 'setTargetOrigin', origin }, () => {
-      chrome.runtime.sendMessage({ type: 'startScan' }, () => {
+    safeSendMessage({ type: 'setTargetOrigin', origin }, () => {
+      safeSendMessage({ type: 'startScan' }, () => {
         state.scanState = 'running';
         showDashboard(true);
         refreshAll();
@@ -72,14 +72,10 @@ function wireEvents() {
   });
 
   safeListen(els.stopCaptureBtn, 'click', () => {
-    chrome.runtime.sendMessage({ type: 'stopScan' }, () => {
+    safeSendMessage({ type: 'stopScan' }, () => {
       state.scanState = 'stopped';
-      state.forceLanding = state.traffic.length === 0 && state.analysis.length === 0 && state.discoveredApis.length === 0;
-      if (state.forceLanding) {
-        showLanding(true);
-      } else {
-        showDashboard(true);
-      }
+      state.forceLanding = true;
+      showLanding(true);
       refreshAll();
     });
   });
@@ -89,7 +85,7 @@ function wireEvents() {
     const remove = e.target.closest('.remove-rule');
     if (toggle) {
       const id = toggle.dataset.ruleId;
-      chrome.runtime.sendMessage({ type: 'toggleCaptureRule', id }, (res) => {
+      safeSendMessage({ type: 'toggleCaptureRule', id }, (res) => {
         if (res?.rules) {
           state.captureRules = res.rules;
           renderRuleList();
@@ -99,7 +95,7 @@ function wireEvents() {
     }
     if (remove) {
       const id = remove.dataset.ruleId;
-      chrome.runtime.sendMessage({ type: 'removeCaptureRule', id }, (res) => {
+      safeSendMessage({ type: 'removeCaptureRule', id }, (res) => {
         if (res?.rules) {
           state.captureRules = res.rules;
           renderRuleList();
@@ -231,20 +227,25 @@ function wireEvents() {
   });
 
   safeListen(els.exportJson, 'click', () => {
-    chrome.runtime.sendMessage({ type: 'getAnalysis' }, (r) => {
+    safeSendMessage({ type: 'getAnalysis' }, (r) => {
       downloadFile('boltclone-analysis.json', JSON.stringify({ exportedAt: new Date().toISOString(), analysis: r?.analysis || [] }, null, 2));
     });
   });
 
   safeListen(els.exportOas, 'click', () => {
-    chrome.runtime.sendMessage({ type: 'exportSpec' }, (r) => {
+    safeSendMessage({ type: 'exportSpec' }, (r) => {
       if (r?.spec) downloadFile('boltclone-openapi.json', JSON.stringify(r.spec, null, 2));
     });
   });
 
   safeListen(els.exportCsv, 'click', () => {
-    chrome.runtime.sendMessage({ type: 'getAnalysis' }, (r) => {
-      const rows = (r?.analysis || []).map((item) => ({
+    const targetOrigin = normalizeUrl(els.targetUrl?.value?.trim ? els.targetUrl.value.trim() : '');
+    safeSendMessage({ type: 'getAnalysis' }, (r) => {
+      const filtered = (r?.analysis || []).filter((item) => {
+        if (!targetOrigin || !item?.url) return true;
+        return item.url.startsWith(targetOrigin);
+      });
+      const rows = filtered.map((item) => ({
         Type: item.type || '',
         Severity: item.severity || '',
         Message: item.message || '',
@@ -254,7 +255,8 @@ function wireEvents() {
         Timestamp: item.timestamp || ''
       }));
       const csv = generateCsv(rows);
-      downloadFile('boltclone-report.csv', csv);
+      const filename = targetOrigin ? `boltclone-report-${targetOrigin.replace(/https?:\/\//, '').replace(/[^a-zA-Z0-9-_]/g, '_')}.csv` : 'boltclone-report.csv';
+      downloadFile(filename, csv);
     });
   });
 }
@@ -785,6 +787,44 @@ async function runWizardTests() {
       }
     }
 
+    if (els.wzOpenRedirect.checked) {
+      const trial = new URL(target);
+      trial.searchParams.set('redirect', 'http://example.com/');
+      const resp = await timeoutFetch(trial.toString(), { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+      const locationHeader = resp?.headers?.get('location') || '';
+      if (resp && resp.status >= 300 && resp.status < 400 && locationHeader.includes('example.com')) {
+        findings.push({ title: 'Potential Open Redirect', severity: 'high', evidence: `Redirected to ${locationHeader}` });
+      } else if (resp && resp.status >= 200 && resp.status < 300) {
+        const text = await resp.text();
+        if (text.includes('http://example.com') || text.includes('https://example.com')) {
+          findings.push({ title: 'Potential Open Redirect', severity: 'medium', evidence: 'External redirect URL reflected in response body.' });
+        }
+      }
+    }
+
+    if (els.wzCors.checked) {
+      const resp = await timeoutFetch(target, { method: 'OPTIONS', mode: 'cors' }, 8000).catch(() => null);
+      const allowOrigin = resp?.headers?.get('access-control-allow-origin') || '';
+      const allowCreds = resp?.headers?.get('access-control-allow-credentials') || '';
+      if (allowOrigin === '*' && allowCreds === 'true') {
+        findings.push({ title: 'CORS misconfiguration', severity: 'medium', evidence: `allow-origin: ${allowOrigin}, allow-credentials: ${allowCreds}` });
+      } else if (allowOrigin && allowOrigin.toLowerCase().includes(url.origin.toLowerCase()) && allowCreds === 'true') {
+        findings.push({ title: 'CORS misconfiguration', severity: 'medium', evidence: `Origin reflected in CORS response: ${allowOrigin}` });
+      }
+    }
+
+    if (els.wzTraversal.checked) {
+      const trial = new URL(target);
+      trial.searchParams.set('file', '../etc/passwd');
+      const resp = await timeoutFetch(trial.toString(), { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
+      if (resp && resp.status >= 200 && resp.status < 300) {
+        const text = await resp.text();
+        if (text.includes('root:') || text.includes('/etc/passwd')) {
+          findings.push({ title: 'Potential Directory Traversal', severity: 'high', evidence: 'Response contained /etc/passwd content.' });
+        }
+      }
+    }
+
     if (els.wzSecHeaders.checked) {
       const resp = await timeoutFetch(target, { method: 'GET', mode: 'cors' }, 8000).catch(() => null);
       if (resp) {
@@ -857,8 +897,28 @@ function showDashboard(show) {
   els.stopCaptureBtn.classList.toggle('hidden', !show);
 }
 
+function safeSendMessage(message, callback) {
+  chrome.runtime.sendMessage(message, (res) => {
+    if (chrome.runtime.lastError) {
+      console.warn('sendMessage failed', message?.type, chrome.runtime.lastError.message);
+      callback?.(null);
+      return;
+    }
+    callback?.(res);
+  });
+}
+
 function sendMessageAsync(message) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(message, (res) => {
+      if (chrome.runtime.lastError) {
+        console.warn('sendMessageAsync failed', message?.type, chrome.runtime.lastError.message);
+        resolve(null);
+        return;
+      }
+      resolve(res);
+    });
+  });
 }
 
 async function refreshAll() {
@@ -924,7 +984,7 @@ async function refreshAll() {
 function addRuleFromInput() {
   const value = els.newRuleInput.value.trim();
   if (!value) return;
-  chrome.runtime.sendMessage({ type: 'addCaptureRule', value }, (res) => {
+  safeSendMessage({ type: 'addCaptureRule', value }, (res) => {
     if (res?.rules) {
       state.captureRules = res.rules;
       els.newRuleInput.value = '';
@@ -958,7 +1018,7 @@ function setMode(mode) {
   state.captureMode = mode;
   els.modeApi.classList.toggle('active', mode === 'api');
   els.modeAll.classList.toggle('active', mode === 'all');
-  chrome.runtime.sendMessage({ type: 'setCaptureMode', mode });
+  safeSendMessage({ type: 'setCaptureMode', mode });
 }
 
 function wireThemeToggle() {
