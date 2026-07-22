@@ -7,6 +7,7 @@ const NOISE_HEADERS = new Set([
 ]);
 
 let els = {};
+let darkTheme = false;
 
 function initPopup() {
   document.querySelectorAll('[id]').forEach((node) => { els[node.id] = node; });
@@ -17,6 +18,7 @@ function initPopup() {
   });
   console.log('popup.js init: missing elements', missingEls);
   wireEvents();
+  wireThemeToggle();
 }
 
 function showLanding(resetLabel = false) {
@@ -28,6 +30,7 @@ const state = {
   captureMode: 'api',
   scanState: 'stopped',
   traffic: [],
+  merged: [],
   discoveredApis: [],
   analysis: [],
   hosts: [],
@@ -454,7 +457,8 @@ function jwtStatus(token) {
 // --- Rendering: Traffic --------------------------------------------------
 
 function renderTraffic() {
-  const merged = groupTrafficById(state.traffic)
+  const merged = state.merged
+    .slice()
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   const methodCounts = new Map();
@@ -488,7 +492,7 @@ function renderTraffic() {
 // --- Rendering: Params -----------------------------------------------
 
 function renderParams() {
-  const merged = groupTrafficById(state.traffic);
+  const merged = state.merged;
   const { header, body, query, response } = computeParams(merged);
   const inputCount = header.size + body.size + query.size;
 
@@ -528,7 +532,7 @@ function renderParams() {
 // --- Rendering: Endpoints ----------------------------------------------
 
 function renderEndpoints() {
-  const merged = groupTrafficById(state.traffic);
+  const merged = state.merged;
   const byHost = computeEndpoints(merged);
 
   els.countEndpoints.textContent = String(Array.from(byHost.values()).reduce((sum, m) => sum + m.size, 0));
@@ -556,7 +560,7 @@ function renderEndpoints() {
 // --- Rendering: Auth -----------------------------------------------------
 
 function renderAuth() {
-  const merged = groupTrafficById(state.traffic);
+  const merged = state.merged;
   const buckets = classifyAuth(merged);
 
   els.cntJwt.textContent = buckets.jwt.size;
@@ -596,7 +600,7 @@ function renderSecurity() {
   const counts = { BOLA: 0, RBAC: 0, MassAssignment: 0 };
   state.analysis.forEach((f) => { if (counts[f.type] !== undefined) counts[f.type] += 1; });
 
-  const merged = groupTrafficById(state.traffic);
+  const merged = state.merged;
   const jwtCount = classifyAuth(merged).jwt.size;
 
   const cards = [
@@ -921,7 +925,27 @@ function sendMessageAsync(message) {
   });
 }
 
+let refreshInFlight = false;
+let refreshQueued = false;
+
 async function refreshAll() {
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return;
+  }
+  refreshInFlight = true;
+  try {
+    await runRefreshAll();
+  } finally {
+    refreshInFlight = false;
+    if (refreshQueued) {
+      refreshQueued = false;
+      refreshAll();
+    }
+  }
+}
+
+async function runRefreshAll() {
   const [trafficRes, discoveredRes, analysisRes, hostsRes, scanRes, rulesRes] = await Promise.all([
     sendMessageAsync({ type: 'getTraffic' }),
     sendMessageAsync({ type: 'getDiscoveredApis' }),
@@ -932,6 +956,7 @@ async function refreshAll() {
   ]);
 
   state.traffic = trafficRes?.traffic || [];
+  state.merged = groupTrafficById(state.traffic);
   state.discoveredApis = discoveredRes?.discoveredApis || [];
   state.analysis = analysisRes?.analysis || [];
   state.hosts = hostsRes?.hosts || [];
@@ -1036,19 +1061,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
-function prefillTargetFromActiveTab() {
-  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-    if (tab?.url && !els.targetUrl.value.trim()) {
-      const origin = normalizeUrl(tab.url);
-      if (origin) els.targetUrl.value = origin;
-    }
-  });
-}
-
 document.addEventListener('DOMContentLoaded', () => {
   try {
     initPopup();
-    prefillTargetFromActiveTab();
     refreshAll();
     setInterval(refreshAll, 4000);
   } catch (err) {

@@ -1,0 +1,13 @@
+{
+  "name": "boltclone-cli",
+  "version": "1.0.0",
+  "description": "BOLTCLONE command-line vulnerability assessment tool for web apps and APIs.",
+  "type": "module",
+  "bin": {
+    "boltclone": "./bin/boltclone.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}

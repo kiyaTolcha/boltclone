@@ -47,7 +47,7 @@ function captureRuleMatches(url, rule) {
     }
     // Wildcard origin matching
     if (pattern.includes('*')) {
-      const regex = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*') + '$', 'i');
+      const regex = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
       return regex.test(targetUrl.href) || regex.test(targetUrl.origin) || regex.test(targetUrl.host);
     }
     if (pattern.startsWith('/')) {
@@ -169,16 +169,37 @@ function normalizeRequestBody(requestBody) {
   return normalized;
 }
 
+let pendingTraffic = [];
+let flushInProgress = false;
+
 function saveTraffic(entry) {
   if (entry.requestBody) {
     entry.requestBody = normalizeRequestBody(entry.requestBody);
   }
+  pendingTraffic.push(entry);
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  if (flushInProgress) return;
+  flushInProgress = true;
+  queueMicrotask(flushTraffic);
+}
+
+function flushTraffic() {
+  if (pendingTraffic.length === 0) {
+    flushInProgress = false;
+    return;
+  }
+  const batch = pendingTraffic;
+  pendingTraffic = [];
 
   chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
-    const next = [entry, ...(boltcloneTraffic || [])].slice(0, 1000);
+    const next = [...batch.slice().reverse(), ...(boltcloneTraffic || [])].slice(0, 1000);
     chrome.storage.local.set({ [STATS_KEY]: next }, () => {
-      console.debug('Saved traffic entry:', entry);
-      console.debug('Traffic storage length:', next.length);
+      console.debug('Flushed traffic batch, size:', batch.length, 'total:', next.length);
+      flushInProgress = false;
+      if (pendingTraffic.length > 0) scheduleFlush();
     });
   });
 }

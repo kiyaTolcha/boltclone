@@ -91,7 +91,7 @@ function analyzeHosts(logEntries) {
     const corsIssue = responseHeaderEntries.some((e) => {
       const allowMethods = e.responseHeaders.find((h) => h.name.toLowerCase() === 'access-control-allow-methods');
       const allowOrigin = e.responseHeaders.find((h) => h.name.toLowerCase() === 'access-control-allow-origin');
-      return (allowOrigin?.value === '*' && hasAuth) || /put|delete/i.test(allowMethods?.value || '');
+      return (allowOrigin?.value === '*' && authEntries.length > 0) || /put|delete/i.test(allowMethods?.value || '');
     });
     if (corsIssue) tags.push({ label: 'CORS Issues', kind: 'purple' });
 
