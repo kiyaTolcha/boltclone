@@ -4,7 +4,7 @@ const STATS_KEY = 'boltcloneTraffic';
 const CAPTURE_RULES_KEY = 'boltcloneCaptureRules';
 
 // load logic modules in service worker environment (import() is disallowed there)
-importScripts('rules.js', 'openapi.js');
+importScripts('rules.js', 'openapi.js', 'postman.js');
 
 let captureMode = 'api';
 let targetOrigin = null;
@@ -434,6 +434,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     try {
       chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
         const spec = typeof buildOpenApi === 'function' ? buildOpenApi(boltcloneTraffic || []) : { openapi: '3.0.0', info: { title: 'BOLTCLONE API Inventory', version: '1.0.0' }, paths: {} };
+        sendResponse({ spec });
+      });
+    } catch (err) {
+      sendResponse({ error: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  if (message.type === 'exportPostmanSpec') {
+    try {
+      chrome.storage.local.get({ [STATS_KEY]: [] }, ({ boltcloneTraffic }) => {
+        const spec = typeof buildPostmanCollection === 'function' ? buildPostmanCollection(boltcloneTraffic || []) : { info: { name: 'BOLTCLONE' }, item: [] };
         sendResponse({ spec });
       });
     } catch (err) {

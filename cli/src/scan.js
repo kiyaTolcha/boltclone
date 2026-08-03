@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import { pool } from './http.js';
 import { discoverEndpoints, enumerateSubdomains } from './discovery.js';
 import { runInjectionChecks } from './checks/injection.js';
@@ -11,11 +12,30 @@ export function normalizeTarget(value) {
   return new URL(withScheme).toString().replace(/\/$/, '');
 }
 
-export async function runScan({ target, concurrency, timeout, categories, credsFile, onProgress }) {
+export async function runScan({ target, concurrency, timeout, categories, credsFile, importSession, onProgress }) {
   const startTime = Date.now();
   const baseUrl = normalizeTarget(target);
   const hostname = new URL(baseUrl).hostname;
   const findings = [];
+  let importedTraffic = [];
+
+  if (importSession) {
+    try {
+      onProgress?.(`Importing session file ${importSession} ...`);
+      const raw = await fs.readFile(importSession, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        importedTraffic = parsed;
+      } else if (parsed.boltcloneTraffic && Array.isArray(parsed.boltcloneTraffic)) {
+        importedTraffic = parsed.boltcloneTraffic;
+      } else if (parsed.analysis && Array.isArray(parsed.analysis)) {
+        importedTraffic = parsed.analysis;
+      }
+      onProgress?.(`Imported ${importedTraffic.length} entry/entries from session file.`);
+    } catch (err) {
+      onProgress?.(`Warning: Failed to parse session file: ${err.message}`);
+    }
+  }
 
   onProgress?.(`Discovering endpoints on ${baseUrl} ...`);
   const discovered = await discoverEndpoints(baseUrl, { concurrency, timeout });
@@ -28,7 +48,11 @@ export async function runScan({ target, concurrency, timeout, categories, credsF
     onProgress?.(`Found ${subdomains.length} subdomain(s).`);
   }
 
-  const scanTargets = Array.from(new Set([baseUrl, ...discovered.map((d) => d.url)]));
+  const importedUrls = importedTraffic
+    .map((e) => (typeof e === 'string' ? e : e.url))
+    .filter(Boolean);
+
+  const scanTargets = Array.from(new Set([baseUrl, ...discovered.map((d) => d.url), ...importedUrls]));
 
   if (categories.injection || categories.access) {
     onProgress?.(`Running injection/access checks against ${scanTargets.length} endpoint(s) ...`);
@@ -65,6 +89,8 @@ export async function runScan({ target, concurrency, timeout, categories, credsF
       endpointCount: scanTargets.length,
       subdomainCount: subdomains.length,
       subdomains,
+      discovered,
+      importedTraffic,
       durationMs: Date.now() - startTime
     }
   };

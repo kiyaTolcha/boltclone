@@ -13,7 +13,7 @@ function initPopup() {
   document.querySelectorAll('[id]').forEach((node) => { els[node.id] = node; });
 
   const missingEls = [];
-  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','exportCsv','wzRateLimit','wzIdor','wzSql','wzXss','wzCsrf','wzSsrf','wzSecHeaders','wzOpenRedirect','wzCors','wzTraversal','themeToggle'].forEach((id) => {
+  ['modeApi','modeAll','addRuleBtn','newRuleInput','ruleList','startCaptureBtn','stopCaptureBtn','discoverPage','testPage','methodChips','paramTypeChips','authTypeChips','wizApiList','wizCustomUrl','wizEndpointList','wizNext','wizBack','wizNew','rbacDismiss','rbacCta','testCardList','exportJson','exportOas','exportPostman','exportCsv','wzRateLimit','wzIdor','wzSql','wzXss','wzCsrf','wzSsrf','wzSecHeaders','wzOpenRedirect','wzCors','wzTraversal','themeToggle'].forEach((id) => {
     if (!els[id]) missingEls.push(id);
   });
   console.log('popup.js init: missing elements', missingEls);
@@ -238,6 +238,12 @@ function wireEvents() {
   safeListen(els.exportOas, 'click', () => {
     safeSendMessage({ type: 'exportSpec' }, (r) => {
       if (r?.spec) downloadFile('boltclone-openapi.json', JSON.stringify(r.spec, null, 2));
+    });
+  });
+
+  safeListen(els.exportPostman, 'click', () => {
+    safeSendMessage({ type: 'exportPostmanSpec' }, (r) => {
+      if (r?.spec) downloadFile('boltclone-postman.json', JSON.stringify(r.spec, null, 2));
     });
   });
 

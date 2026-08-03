@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import fs from 'node:fs/promises';
 import { parseCliArgs } from '../src/args.js';
 import { runScan } from '../src/scan.js';
 import { printConsoleReport, writeJsonReport, writeCsvReport } from '../src/report.js';
+import { buildCliOpenApi } from '../src/openapi.js';
+import { buildCliPostman } from '../src/postman.js';
 
 async function main() {
   const opts = parseCliArgs(process.argv.slice(2));
@@ -25,6 +28,7 @@ async function main() {
       timeout: opts.timeout,
       categories: opts.categories,
       credsFile: opts.credsFile,
+      importSession: opts.importSession,
       onProgress
     });
   } catch (err) {
@@ -42,6 +46,18 @@ async function main() {
   if (opts.csvOut) {
     await writeCsvReport(opts.csvOut, result.findings);
     console.error(`CSV report written to ${opts.csvOut}`);
+  }
+
+  if (opts.openapiOut) {
+    const spec = buildCliOpenApi(result.meta.discovered || [], result.meta.importedTraffic || []);
+    await fs.writeFile(opts.openapiOut, JSON.stringify(spec, null, 2), 'utf8');
+    console.error(`OpenAPI spec written to ${opts.openapiOut}`);
+  }
+
+  if (opts.postmanOut) {
+    const spec = buildCliPostman(result.meta.discovered || [], result.meta.importedTraffic || []);
+    await fs.writeFile(opts.postmanOut, JSON.stringify(spec, null, 2), 'utf8');
+    console.error(`Postman collection written to ${opts.postmanOut}`);
   }
 
   const hasHigh = result.findings.some((f) => f.severity === 'high');

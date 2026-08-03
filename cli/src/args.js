@@ -10,6 +10,9 @@ Options:
   -c, --concurrency <n>   Max concurrent requests (default: 8)
   -t, --timeout <ms>      Per-request timeout in ms (default: 8000)
       --skip <list>       Comma-separated categories to skip: injection,access,tls,deps
+      --import-session <file> Path to JSON traffic session exported from Chrome extension
+      --openapi <file>    Generate and write OpenAPI 3.0 specification JSON to <file>
+      --postman <file>    Generate and write Postman Collection v2.1 JSON to <file>
       --auth-test         Enable opt-in auth/brute-force checks (only against targets you own or are authorized to test)
       --creds <file>      Path to a JSON file of {username,password} pairs for --auth-test (default: small built-in list)
       --subdomains        Enable opt-in subdomain enumeration via crt.sh (queries a third-party service with the target domain)
@@ -20,8 +23,9 @@ Options:
 
 Examples:
   boltclone https://example.com
+  boltclone https://example.com --import-session extension-traffic.json
+  boltclone https://example.com --openapi spec.json --postman collection.json
   boltclone https://example.com --skip tls,deps --json report.json
-  boltclone https://example.com --auth-test --subdomains
 `;
 
 export function parseCliArgs(argv) {
@@ -32,6 +36,9 @@ export function parseCliArgs(argv) {
       concurrency: { type: 'string', short: 'c', default: '8' },
       timeout: { type: 'string', short: 't', default: '8000' },
       skip: { type: 'string', default: '' },
+      'import-session': { type: 'string' },
+      openapi: { type: 'string' },
+      postman: { type: 'string' },
       'auth-test': { type: 'boolean', default: false },
       creds: { type: 'string' },
       subdomains: { type: 'boolean', default: false },
@@ -53,6 +60,9 @@ export function parseCliArgs(argv) {
     target: positionals[0],
     concurrency: Math.max(1, parseInt(values.concurrency, 10) || 8),
     timeout: Math.max(1000, parseInt(values.timeout, 10) || 8000),
+    importSession: values['import-session'] || null,
+    openapiOut: values.openapi || null,
+    postmanOut: values.postman || null,
     categories: {
       injection: !skip.has('injection'),
       access: !skip.has('access'),
