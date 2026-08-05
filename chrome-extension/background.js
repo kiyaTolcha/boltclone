@@ -4,7 +4,7 @@ const STATS_KEY = 'boltcloneTraffic';
 const CAPTURE_RULES_KEY = 'boltcloneCaptureRules';
 
 // load logic modules in service worker environment (import() is disallowed there)
-importScripts('rules.js', 'openapi.js', 'postman.js');
+importScripts('rules.js', 'openapi.js', 'postman.js', 'htmlReport.js', 'vulndb.js', 'gemini.js');
 
 let captureMode = 'api';
 let targetOrigin = null;
@@ -451,6 +451,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } catch (err) {
       sendResponse({ error: err?.message || String(err) });
     }
+    return true;
+  }
+
+  if (message.type === 'exportHtmlReport') {
+    try {
+      chrome.storage.local.get({ [STATS_KEY]: [], boltcloneAnalysis: [], [DISCOVERED_API_KEY]: [] }, (data) => {
+        const traffic = data[STATS_KEY] || [];
+        const analysis = data.boltcloneAnalysis || [];
+        const discovered = data[DISCOVERED_API_KEY] || [];
+        const html = typeof generateHtmlReport === 'function'
+          ? generateHtmlReport({ target: targetOrigin || 'Captured Browsing Traffic', findings: analysis, traffic, discovered })
+          : '<html><body>No report generator available.</body></html>';
+        sendResponse({ html });
+      });
+    } catch (err) {
+      sendResponse({ error: err?.message || String(err) });
+    }
+    return true;
+  }
+
+  if (message.type === 'analyzeWithGemini') {
+    const apiKey = message.apiKey;
+    chrome.storage.local.get({ [STATS_KEY]: [], boltcloneAnalysis: [] }, async (data) => {
+      try {
+        const traffic = data[STATS_KEY] || [];
+        const analysis = data.boltcloneAnalysis || [];
+        const aiResult = await analyzeWithGemini(apiKey, analysis, { target: targetOrigin, endpointCount: traffic.length });
+        sendResponse({ result: aiResult });
+      } catch (err) {
+        sendResponse({ error: err?.message || String(err) });
+      }
+    });
+    return true;
+  }
+
+  if (message.type === 'lookupVulnDb') {
+    const serverHeader = message.serverHeader;
+    lookupSoftwareVulns(serverHeader).then((results) => {
+      sendResponse({ results });
+    }).catch((err) => {
+      sendResponse({ error: err?.message || String(err) });
+    });
     return true;
   }
 

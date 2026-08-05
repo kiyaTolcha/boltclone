@@ -1,4 +1,5 @@
 import { writeFile } from 'node:fs/promises';
+import { buildCliHtmlReport } from './htmlReport.js';
 
 const COLORS = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
@@ -54,4 +55,9 @@ export async function writeCsvReport(path, findings) {
     lines.push(headers.map((h) => csvEscape(f[h])).join(','));
   });
   await writeFile(path, lines.join('\n'), 'utf8');
+}
+
+export async function writeHtmlReport(path, target, findings, meta) {
+  const html = buildCliHtmlReport(target, findings, meta);
+  await writeFile(path, html, 'utf8');
 }

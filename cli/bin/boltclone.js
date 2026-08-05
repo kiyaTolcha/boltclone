@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import { parseCliArgs } from '../src/args.js';
 import { runScan } from '../src/scan.js';
-import { printConsoleReport, writeJsonReport, writeCsvReport } from '../src/report.js';
+import { printConsoleReport, writeJsonReport, writeCsvReport, writeHtmlReport } from '../src/report.js';
 import { buildCliOpenApi } from '../src/openapi.js';
 import { buildCliPostman } from '../src/postman.js';
 
@@ -29,6 +29,8 @@ async function main() {
       categories: opts.categories,
       credsFile: opts.credsFile,
       importSession: opts.importSession,
+      vulndb: opts.vulndb,
+      geminiKey: opts.geminiKey,
       onProgress
     });
   } catch (err) {
@@ -39,6 +41,22 @@ async function main() {
 
   printConsoleReport(result.findings, result.meta, opts.color);
 
+  if (result.meta.geminiAnalysis) {
+    console.log('\n============================================================');
+    console.log('  ✨ GOOGLE GEMINI AI THREAT SYNTHESIS');
+    console.log('============================================================');
+    console.log(`Risk Score: ${result.meta.geminiAnalysis.overallRiskScore}/100`);
+    console.log(`\nExecutive Summary:\n${result.meta.geminiAnalysis.executiveSummary}`);
+    if (result.meta.geminiAnalysis.attackPath) {
+      console.log(`\nAttack Vector & Scenario:\n${result.meta.geminiAnalysis.attackPath}`);
+    }
+    if (result.meta.geminiAnalysis.priorityFixes?.length) {
+      console.log('\nPriority Remediation Fixes:');
+      result.meta.geminiAnalysis.priorityFixes.forEach((fix, idx) => console.log(` ${idx + 1}. ${fix}`));
+    }
+    console.log('============================================================\n');
+  }
+
   if (opts.jsonOut) {
     await writeJsonReport(opts.jsonOut, result.findings, result.meta);
     console.error(`\nJSON report written to ${opts.jsonOut}`);
@@ -46,6 +64,10 @@ async function main() {
   if (opts.csvOut) {
     await writeCsvReport(opts.csvOut, result.findings);
     console.error(`CSV report written to ${opts.csvOut}`);
+  }
+  if (opts.htmlOut) {
+    await writeHtmlReport(opts.htmlOut, result.meta.target, result.findings, result.meta);
+    console.error(`HTML executive report written to ${opts.htmlOut}`);
   }
 
   if (opts.openapiOut) {

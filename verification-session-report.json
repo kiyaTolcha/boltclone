@@ -1,0 +1,140 @@
+{
+  "meta": {
+    "target": "https://httpbin.org",
+    "endpointCount": 5,
+    "subdomainCount": 0,
+    "subdomains": [],
+    "discovered": [
+      {
+        "path": "/robots.txt",
+        "url": "https://httpbin.org/robots.txt",
+        "status": 200
+      }
+    ],
+    "importedTraffic": [
+      {
+        "url": "https://httpbin.org/get?user_id=123",
+        "method": "GET",
+        "statusCode": 200,
+        "requestHeaders": [
+          {
+            "name": "Authorization",
+            "value": "Bearer jwt-test-token"
+          }
+        ]
+      },
+      {
+        "url": "https://httpbin.org/anything/user/456",
+        "method": "GET",
+        "statusCode": 200,
+        "requestHeaders": [
+          {
+            "name": "Authorization",
+            "value": "Bearer jwt-test-token"
+          }
+        ]
+      },
+      {
+        "url": "https://httpbin.org/anything/order/e8e6371c-3b9a-4c8d-b3ef-8f1d2c3b4a5e",
+        "method": "POST",
+        "statusCode": 201,
+        "requestHeaders": [
+          {
+            "name": "Authorization",
+            "value": "Bearer jwt-test-token"
+          }
+        ],
+        "requestBody": {
+          "raw": [
+            {
+              "bytes": [
+                123,
+                34,
+                105,
+                116,
+                101,
+                109,
+                34,
+                58,
+                34,
+                119,
+                105,
+                100,
+                103,
+                101,
+                116,
+                34,
+                44,
+                34,
+                113,
+                117,
+                97,
+                110,
+                116,
+                105,
+                116,
+                121,
+                34,
+                58,
+                53,
+                125
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "durationMs": 58362
+  },
+  "findings": [
+    {
+      "category": "access",
+      "title": "Potential CSRF risk",
+      "severity": "medium",
+      "url": "https://httpbin.org",
+      "evidence": "CORS preflight allows state-changing methods: GET, POST, PUT, DELETE, PATCH, OPTIONS"
+    },
+    {
+      "category": "access",
+      "title": "Missing security headers",
+      "severity": "low",
+      "url": "https://httpbin.org",
+      "evidence": "Missing: Content-Security-Policy, Strict-Transport-Security, X-Frame-Options, X-Content-Type-Options, Referrer-Policy"
+    },
+    {
+      "category": "access",
+      "title": "Missing security headers",
+      "severity": "low",
+      "url": "https://httpbin.org/robots.txt",
+      "evidence": "Missing: Content-Security-Policy, Strict-Transport-Security, X-Frame-Options, X-Content-Type-Options, Referrer-Policy"
+    },
+    {
+      "category": "access",
+      "title": "CORS reflects arbitrary Origin",
+      "severity": "medium",
+      "url": "https://httpbin.org/get?user_id=123",
+      "evidence": "Server reflected an untrusted Origin back: https://attacker.example"
+    },
+    {
+      "category": "access",
+      "title": "CORS reflects arbitrary Origin",
+      "severity": "medium",
+      "url": "https://httpbin.org/anything/user/456",
+      "evidence": "Server reflected an untrusted Origin back: https://attacker.example"
+    },
+    {
+      "category": "access",
+      "title": "Missing security headers",
+      "severity": "low",
+      "url": "https://httpbin.org/anything/order/e8e6371c-3b9a-4c8d-b3ef-8f1d2c3b4a5e",
+      "evidence": "Missing: Content-Security-Policy, Strict-Transport-Security, X-Frame-Options, X-Content-Type-Options, Referrer-Policy"
+    },
+    {
+      "category": "deps",
+      "title": "Server header discloses software/version",
+      "severity": "low",
+      "url": "https://httpbin.org",
+      "evidence": "Server: gunicorn/19.9.0"
+    }
+  ]
+}

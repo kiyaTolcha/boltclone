@@ -25,6 +25,9 @@ boltclone <target-url> [options]
       --import-session <file> Path to JSON session exported from Chrome extension
       --openapi <file>    Write OpenAPI 3.0 specification JSON
       --postman <file>    Write Postman Collection v2.1 JSON
+      --html <file>       Write self-contained executive HTML report
+      --gemini-key <key>  Google Gemini API Key for AI threat modeling & fix synthesis (or set GEMINI_API_KEY env)
+      --vulndb            Enable live Vulnerability Database lookup (OSV.dev / NVD) for detected software
       --auth-test         Opt-in auth/brute-force checks (only against targets you own or are authorized to test)
       --creds <file>      JSON file of {username,password} pairs for --auth-test
       --subdomains        Opt-in subdomain enumeration via crt.sh
@@ -33,12 +36,19 @@ boltclone <target-url> [options]
       --no-color          Disable colored output
 ```
 
-## Chrome Extension Integration
+## AI & Vulnerability Database Features
 
-You can import traffic sessions captured by the BOLTCLONE Chrome extension and run automated CLI security scans on those exact endpoints:
+Perform automated CVE database lookups and generate AI threat synthesis:
 
 ```bash
-boltclone https://example.com --import-session extension-traffic.json --openapi spec.json --postman collection.json
+# Enable live Vulnerability Database lookup (OSV.dev / NVD)
+boltclone https://example.com --vulndb
+
+# AI Threat Modeling via Gemini API
+boltclone https://example.com --gemini-key AIzaSy... --html report.html
+
+# Chrome Extension Session Import + Gemini AI + Vuln DB + Executive Report
+boltclone https://example.com --import-session session.json --vulndb --gemini-key AIzaSy... --html report.html
 ```
 
 ## What it checks

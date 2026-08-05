@@ -6,18 +6,22 @@ import { runAccessChecks } from './checks/access.js';
 import { runTlsChecks } from './checks/tls.js';
 import { runDependencyChecks } from './checks/deps.js';
 import { runAuthChecks } from './checks/auth.js';
+import { lookupSoftwareVulns } from './vulndb.js';
+import { analyzeWithGemini } from './gemini.js';
 
 export function normalizeTarget(value) {
   const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
   return new URL(withScheme).toString().replace(/\/$/, '');
 }
 
-export async function runScan({ target, concurrency, timeout, categories, credsFile, importSession, onProgress }) {
+export async function runScan({ target, concurrency, timeout, categories, credsFile, importSession, vulndb, geminiKey, onProgress }) {
   const startTime = Date.now();
   const baseUrl = normalizeTarget(target);
   const hostname = new URL(baseUrl).hostname;
   const findings = [];
   let importedTraffic = [];
+  let geminiAnalysis = null;
+  let vulndbResults = [];
 
   if (importSession) {
     try {
@@ -82,6 +86,36 @@ export async function runScan({ target, concurrency, timeout, categories, credsF
     findings.push(...await runAuthChecks(baseUrl, discovered, timeout, credsFile));
   }
 
+  if (vulndb) {
+    onProgress?.('Querying Vulnerability Databases (OSV.dev / NVD) for server technologies ...');
+    const depFinding = findings.find((f) => f.category === 'deps' && f.evidence?.includes('Server:'));
+    if (depFinding) {
+      vulndbResults = await lookupSoftwareVulns(depFinding.evidence);
+      if (vulndbResults.length > 0) {
+        vulndbResults.forEach((res) => {
+          res.vulns.forEach((v) => {
+            findings.push({
+              category: 'vulndb',
+              title: `Vulnerability in ${res.software} ${res.version}: ${v.cve}`,
+              severity: 'high',
+              url: baseUrl,
+              evidence: `CVE ID: ${v.cve} | Summary: ${v.summary}`
+            });
+          });
+        });
+      }
+    }
+  }
+
+  if (geminiKey) {
+    try {
+      onProgress?.('Synthesizing threat analysis & remediation guidance via Google Gemini AI ...');
+      geminiAnalysis = await analyzeWithGemini(geminiKey, findings, { target: baseUrl, endpointCount: scanTargets.length });
+    } catch (err) {
+      onProgress?.(`Warning: Gemini AI analysis failed: ${err.message}`);
+    }
+  }
+
   return {
     findings,
     meta: {
@@ -91,6 +125,8 @@ export async function runScan({ target, concurrency, timeout, categories, credsF
       subdomains,
       discovered,
       importedTraffic,
+      vulndbResults,
+      geminiAnalysis,
       durationMs: Date.now() - startTime
     }
   };

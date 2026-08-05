@@ -1,0 +1,94 @@
+{
+  "info": {
+    "name": "BOLTCLONE Discovered Collection",
+    "description": "Exported from BOLTCLONE CLI Security Tool",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "GET /get",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/get?user_id=123",
+          "protocol": "https",
+          "host": [
+            "httpbin",
+            "org"
+          ],
+          "path": [
+            "get"
+          ],
+          "query": [
+            {
+              "key": "user_id",
+              "value": "123"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET /anything/user/456",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/anything/user/456",
+          "protocol": "https",
+          "host": [
+            "httpbin",
+            "org"
+          ],
+          "path": [
+            "anything",
+            "user",
+            "456"
+          ],
+          "query": []
+        }
+      }
+    },
+    {
+      "name": "POST /anything/order/e8e6371c-3b9a-4c8d-b3ef-8f1d2c3b4a5e",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/anything/order/e8e6371c-3b9a-4c8d-b3ef-8f1d2c3b4a5e",
+          "protocol": "https",
+          "host": [
+            "httpbin",
+            "org"
+          ],
+          "path": [
+            "anything",
+            "order",
+            "e8e6371c-3b9a-4c8d-b3ef-8f1d2c3b4a5e"
+          ],
+          "query": []
+        }
+      }
+    },
+    {
+      "name": "GET /robots.txt",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://httpbin.org/robots.txt",
+          "protocol": "https",
+          "host": [
+            "httpbin",
+            "org"
+          ],
+          "path": [
+            "robots.txt"
+          ],
+          "query": []
+        }
+      }
+    }
+  ]
+}

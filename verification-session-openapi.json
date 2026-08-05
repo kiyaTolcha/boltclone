@@ -5,9 +5,30 @@
     "version": "1.0.0"
   },
   "paths": {
-    "/users/{userId}": {
+    "/get": {
       "get": {
-        "summary": "GET /users/{userId}",
+        "summary": "GET /get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "example": "123"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/anything/user/{userId}": {
+      "get": {
+        "summary": "GET /anything/user/{userId}",
         "parameters": [
           {
             "name": "userId",
@@ -25,9 +46,9 @@
         }
       }
     },
-    "/api/v1/orders/{orderUuid}": {
+    "/anything/order/{orderUuid}": {
       "post": {
-        "summary": "POST /api/v1/orders/{orderUuid}",
+        "summary": "POST /anything/order/{orderUuid}",
         "parameters": [
           {
             "name": "orderUuid",
@@ -42,6 +63,17 @@
         "responses": {
           "200": {
             "description": "Successful response"
+          }
+        }
+      }
+    },
+    "/robots.txt": {
+      "get": {
+        "summary": "GET /robots.txt",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Discovered endpoint"
           }
         }
       }

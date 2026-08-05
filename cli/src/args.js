@@ -13,6 +13,9 @@ Options:
       --import-session <file> Path to JSON traffic session exported from Chrome extension
       --openapi <file>    Generate and write OpenAPI 3.0 specification JSON to <file>
       --postman <file>    Generate and write Postman Collection v2.1 JSON to <file>
+      --html <file>       Generate and write self-contained executive HTML report to <file>
+      --gemini-key <key>  Google Gemini API Key for AI threat modeling & fix synthesis (or set GEMINI_API_KEY env)
+      --vulndb            Enable live Vulnerability Database lookup (OSV.dev / NVD) for detected technologies
       --auth-test         Enable opt-in auth/brute-force checks (only against targets you own or are authorized to test)
       --creds <file>      Path to a JSON file of {username,password} pairs for --auth-test (default: small built-in list)
       --subdomains        Enable opt-in subdomain enumeration via crt.sh (queries a third-party service with the target domain)
@@ -22,10 +25,9 @@ Options:
   -h, --help              Show this help
 
 Examples:
-  boltclone https://example.com
-  boltclone https://example.com --import-session extension-traffic.json
-  boltclone https://example.com --openapi spec.json --postman collection.json
-  boltclone https://example.com --skip tls,deps --json report.json
+  boltclone https://example.com --vulndb
+  boltclone https://example.com --gemini-key AIzaSy... --html report.html
+  boltclone https://example.com --import-session extension-traffic.json --vulndb --html report.html
 `;
 
 export function parseCliArgs(argv) {
@@ -39,6 +41,9 @@ export function parseCliArgs(argv) {
       'import-session': { type: 'string' },
       openapi: { type: 'string' },
       postman: { type: 'string' },
+      html: { type: 'string' },
+      'gemini-key': { type: 'string' },
+      vulndb: { type: 'boolean', default: false },
       'auth-test': { type: 'boolean', default: false },
       creds: { type: 'string' },
       subdomains: { type: 'boolean', default: false },
@@ -63,6 +68,9 @@ export function parseCliArgs(argv) {
     importSession: values['import-session'] || null,
     openapiOut: values.openapi || null,
     postmanOut: values.postman || null,
+    htmlOut: values.html || null,
+    geminiKey: values['gemini-key'] || process.env.GEMINI_API_KEY || null,
+    vulndb: values.vulndb,
     categories: {
       injection: !skip.has('injection'),
       access: !skip.has('access'),
