@@ -1,4 +1,4 @@
-export function generateHtmlReport({ target = 'Target Site', findings = [], meta = {}, traffic = [], discovered = [] }) {
+function generateHtmlReport({ target = 'Target Site', findings = [], meta = {}, traffic = [], discovered = [] }) {
   const counts = { high: 0, medium: 0, low: 0, info: 0 };
   findings.forEach((f) => {
     const sev = (f.severity || 'info').toLowerCase();

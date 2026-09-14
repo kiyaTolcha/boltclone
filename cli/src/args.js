@@ -9,7 +9,7 @@ Usage:
 Options:
   -c, --concurrency <n>   Max concurrent requests (default: 8)
   -t, --timeout <ms>      Per-request timeout in ms (default: 8000)
-      --skip <list>       Comma-separated categories to skip: injection,access,tls,deps
+      --skip <list>       Comma-separated categories to skip: injection,access,tls,deps,cookies,graphql,exposure
       --import-session <file> Path to JSON traffic session exported from Chrome extension
       --openapi <file>    Generate and write OpenAPI 3.0 specification JSON to <file>
       --postman <file>    Generate and write Postman Collection v2.1 JSON to <file>
@@ -73,10 +73,13 @@ export function parseCliArgs(argv) {
     vulndb: values.vulndb,
     categories: {
       injection: !skip.has('injection'),
-      access: !skip.has('access'),
-      tls: !skip.has('tls'),
-      deps: !skip.has('deps'),
-      auth: values['auth-test'],
+      access:    !skip.has('access'),
+      tls:       !skip.has('tls'),
+      deps:      !skip.has('deps'),
+      cookies:   !skip.has('cookies'),
+      graphql:   !skip.has('graphql'),
+      exposure:  !skip.has('exposure'),
+      auth:      values['auth-test'],
       subdomains: values.subdomains
     },
     credsFile: values.creds || null,

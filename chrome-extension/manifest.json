@@ -6,7 +6,7 @@
   "permissions": ["storage", "tabs", "webRequest", "activeTab", "scripting", "alarms", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_title": "BOLTCLONE" },
+  "action": { "default_title": "BOLTCLONE", "default_popup": "panel.html" },
   "side_panel": { "default_path": "panel.html" },
   "devtools_page": "devtools.html",
   "content_scripts": [

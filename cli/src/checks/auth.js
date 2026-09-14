@@ -1,6 +1,9 @@
 import { safeFetch } from '../http.js';
 import { readFile } from 'node:fs/promises';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const jitter = () => sleep(400 + Math.random() * 500); // 400–900 ms between attempts
+
 const LOGIN_PATH_HINTS = ['login', 'signin', 'sign-in', 'auth', 'session'];
 const DEFAULT_LOGIN_PATHS = ['/login', '/api/login', '/api/auth/login', '/auth/login', '/rest/user/login'];
 const DEFAULT_CREDS = [
@@ -81,6 +84,7 @@ export async function runAuthChecks(baseUrl, discovered, timeout, credsFile) {
         });
         break;
       }
+      await jitter(); // avoid triggering rate-limiting / IP bans
     }
     if (!responded) {
       // Only report "endpoint exists" as informational if we got any response at all.

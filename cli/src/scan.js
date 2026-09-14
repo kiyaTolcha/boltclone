@@ -6,6 +6,9 @@ import { runAccessChecks } from './checks/access.js';
 import { runTlsChecks } from './checks/tls.js';
 import { runDependencyChecks } from './checks/deps.js';
 import { runAuthChecks } from './checks/auth.js';
+import { runCookieChecks } from './checks/cookies.js';
+import { runGraphqlChecks } from './checks/graphql.js';
+import { runExposureChecks } from './checks/exposure.js';
 import { lookupSoftwareVulns } from './vulndb.js';
 import { analyzeWithGemini } from './gemini.js';
 
@@ -77,6 +80,26 @@ export async function runScan({ target, concurrency, timeout, categories, credsF
     sideTasks.push((async () => {
       onProgress?.('Fingerprinting dependencies and checking OSV.dev ...');
       findings.push(...await runDependencyChecks(baseUrl, timeout));
+    })());
+  }
+  if (categories.cookies) {
+    sideTasks.push((async () => {
+      onProgress?.(`Running cookie security checks against ${scanTargets.length} endpoint(s) ...`);
+      await pool(scanTargets, concurrency, async (url) => {
+        findings.push(...await runCookieChecks(url, timeout));
+      });
+    })());
+  }
+  if (categories.graphql) {
+    sideTasks.push((async () => {
+      onProgress?.('Probing for GraphQL endpoints ...');
+      findings.push(...await runGraphqlChecks(baseUrl, timeout));
+    })());
+  }
+  if (categories.exposure) {
+    sideTasks.push((async () => {
+      onProgress?.('Probing for sensitive file / endpoint exposure ...');
+      findings.push(...await runExposureChecks(baseUrl, timeout));
     })());
   }
   await Promise.all(sideTasks);

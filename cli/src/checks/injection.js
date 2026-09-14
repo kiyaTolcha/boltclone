@@ -51,12 +51,56 @@ export async function checkDirectoryTraversal(url, timeout) {
   return null;
 }
 
+export async function checkSsti(url, timeout) {
+  // Payloads for Jinja2, Twig, FreeMarker, EL, Pebble, Ruby ERB, Smarty
+  const payloads = ['{{7*7}}', '${7*7}', '#{7*7}', '<%= 7*7 %>', '{% 7*7 %}', '*{7*7}', '{7*7}'];
+  for (const payload of payloads) {
+    const trial = withParam(url, 'q', payload);
+    const resp = await safeFetch(trial.toString(), { method: 'GET' }, timeout);
+    if (!resp || resp.status < 200 || resp.status >= 300) continue;
+    const text = await resp.text().catch(() => '');
+    if (text.includes('49')) {
+      return {
+        category: 'injection',
+        title: 'Potential Server-Side Template Injection (SSTI)',
+        severity: 'high',
+        url: trial.toString(),
+        evidence: `Payload "${payload}" was evaluated — response contained "49" (7×7).`
+      };
+    }
+  }
+  return null;
+}
+
+export async function checkXxe(url, timeout) {
+  const xxePayload = `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE test [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><test>&xxe;</test>`;
+  const resp = await safeFetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/xml' },
+    body: xxePayload
+  }, timeout);
+  if (!resp || resp.status < 200 || resp.status >= 300) return null;
+  const text = await resp.text().catch(() => '');
+  if (text.includes('root:') || text.includes('/bin/bash') || text.includes('/bin/sh')) {
+    return {
+      category: 'injection',
+      title: 'Potential XXE (XML External Entity Injection)',
+      severity: 'high',
+      url,
+      evidence: 'Response included /etc/passwd content after XML external entity injection.'
+    };
+  }
+  return null;
+}
+
 export async function runInjectionChecks(url, timeout) {
   const results = await Promise.all([
     checkSqlInjection(url, timeout),
     checkXss(url, timeout),
     checkOpenRedirect(url, timeout),
-    checkDirectoryTraversal(url, timeout)
+    checkDirectoryTraversal(url, timeout),
+    checkSsti(url, timeout),
+    checkXxe(url, timeout)
   ]);
   return results.filter(Boolean);
 }
