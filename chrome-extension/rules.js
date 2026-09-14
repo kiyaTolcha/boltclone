@@ -20,7 +20,7 @@ function analyzeTraffic(logEntries) {
       const idSegments = parts.filter((p) => /^\d+$/.test(p));
       if (idSegments.length) {
         findings.push({
-          type: '\A',
+          type: 'BOLA',
           severity: 'high',
           message: `Potential object enumeration via ID path in ${entry.method} ${entry.url}`,
           entry
