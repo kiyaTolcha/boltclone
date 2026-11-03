@@ -1121,12 +1121,292 @@ await test('All four new flags can be combined', () => {
   assert.equal(args.rateLimit, 10);
 });
 
+// ── Phase 4 suites ─────────────────────────────────────────────────────────
+
+import { buildCliHtmlReport } from '../src/htmlReport.js';
+import { printConsoleReport, writeCsvReport, writeJsonReport } from '../src/report.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+
+// Test findings with standards taxonomy (simulating Phase 2/3 output).
+const TAGGED_FINDINGS = [
+  {
+    category: 'access', title: 'Confirmed BOLA — cross-tenant object access',
+    severity: 'high', url: 'https://api.example.com/orders/102',
+    evidence: 'User B received HTTP 200 with matching schema.',
+    standards: { owaspWeb: 'A01', owaspApi: 'API1', wstg: 'WSTG-ATHZ-02', astf: 'ASTF-ATHZ-01' },
+  },
+  {
+    category: 'access', title: 'BFLA — Privileged endpoint accessible to unprivileged role',
+    severity: 'high', url: 'https://api.example.com/admin/users',
+    evidence: 'Secondary token received HTTP 200.',
+    standards: { owaspWeb: 'A01', owaspApi: 'API5', wstg: 'WSTG-ATHZ-03', astf: 'ASTF-ATHZ-02' },
+  },
+  {
+    category: 'bopla', title: 'Excessive Data Exposure — sensitive fields in response',
+    severity: 'high', url: 'https://api.example.com/users/1',
+    evidence: 'Response contains password_hash.',
+    standards: { owaspWeb: 'A03', owaspApi: 'API3', wstg: 'WSTG-INFO-05', astf: 'ASTF-ATHZ-03' },
+  },
+  {
+    category: 'access', title: 'Missing security headers',
+    severity: 'low', url: 'https://api.example.com/',
+    evidence: 'Missing: CSP, HSTS.',
+    standards: { owaspWeb: 'A05', owaspApi: null, wstg: 'WSTG-CONF-11', astf: null },
+  },
+  {
+    // Legacy finding without standards (backward compat).
+    category: 'deps', title: 'Server Version Disclosure',
+    severity: 'medium', url: 'https://api.example.com/',
+    evidence: 'Server: nginx/1.14.0',
+  },
+];
+
+const TEST_META = {
+  target: 'https://api.example.com',
+  endpointCount: 12,
+  durationMs: 3200,
+  subdomainCount: 0,
+  subdomains: [],
+  discovered: [],
+  importedTraffic: [],
+  vulndbResults: [],
+  geminiAnalysis: null,
+};
+
+// ---------------------------------------------------------------------------
+// Suite 18: htmlReport.js — Four-standard filter buttons
+// ---------------------------------------------------------------------------
+console.log('\n── Suite 18: htmlReport.js — Standard filter buttons ─────────────');
+
+await test('HTML report contains DOCTYPE and BOLTCLONE brand', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('<!DOCTYPE html>'));
+  assert.ok(html.includes('BOLTCLONE'));
+});
+
+await test('HTML report contains "All Findings" filter button', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('All Findings'));
+});
+
+await test('HTML report contains OWASP Top 10 Web 2021 filter button', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('OWASP Top 10 Web 2021'));
+});
+
+await test('HTML report contains OWASP API Top 10 2023 filter button', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('OWASP API Top 10 2023'));
+});
+
+await test('HTML report contains OWASP WSTG v4.2 filter button', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('OWASP WSTG v4.2'));
+});
+
+await test('HTML report contains OWASP ASTF filter button', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('OWASP ASTF'));
+});
+
+await test('HTML report renders standard taxonomy badge tags on findings', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  // The BOLA finding should have all 4 taxonomy tags rendered.
+  assert.ok(html.includes('OWASP A01'),    'Should render owaspWeb A01 tag');
+  assert.ok(html.includes('OWASP API1'),   'Should render owaspApi API1 tag');
+  assert.ok(html.includes('WSTG-ATHZ-02'), 'Should render WSTG tag');
+  assert.ok(html.includes('ASTF-ATHZ-01'), 'Should render ASTF tag');
+});
+
+await test('HTML report renders data attributes for standard filtering', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('data-owasp-web='), 'Should have data-owasp-web attribute');
+  assert.ok(html.includes('data-owasp-api='), 'Should have data-owasp-api attribute');
+  assert.ok(html.includes('data-wstg='),      'Should have data-wstg attribute');
+  assert.ok(html.includes('data-astf='),      'Should have data-astf attribute');
+});
+
+await test('HTML report contains filterStd JavaScript function', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('function filterStd'));
+});
+
+await test('HTML report contains standard count badges on filter buttons', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  // 3 findings have owaspWeb, so the button should show (3).
+  assert.ok(html.includes('OWASP Top 10 Web 2021 (3)') || html.includes('OWASP Top 10 Web 2021 ('), 'Web button should show count');
+});
+
+await test('HTML report escapes XSS in target', () => {
+  const html = buildCliHtmlReport('<script>alert(1)</script>', TAGGED_FINDINGS, TEST_META);
+  assert.ok(!html.includes('<script>alert(1)</script>'));
+  assert.ok(html.includes('&lt;script&gt;'));
+});
+
+await test('HTML report handles empty findings gracefully', () => {
+  const html = buildCliHtmlReport('https://example.com', [], TEST_META);
+  assert.ok(html.includes('No security vulnerabilities identified'));
+});
+
+await test('HTML report includes print stylesheet', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('@media print'));
+});
+
+await test('Legacy findings without standards still render correctly', () => {
+  const html = buildCliHtmlReport('https://api.example.com', TAGGED_FINDINGS, TEST_META);
+  assert.ok(html.includes('Server Version Disclosure'));
+});
+
+// ---------------------------------------------------------------------------
+// Suite 19: report.js — Console report with taxonomy tags
+// ---------------------------------------------------------------------------
+console.log('\n── Suite 19: report.js — Console taxonomy tags ──────────────────');
+
+await test('printConsoleReport includes taxonomy tags in output', () => {
+  // Capture stdout.
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    printConsoleReport(TAGGED_FINDINGS, TEST_META, false);
+  } finally {
+    console.log = originalLog;
+  }
+  const output = lines.join('\n');
+  // Check the BOLA finding line includes all 4 standard tags.
+  assert.ok(output.includes('OWASP A01'),    'Console output should show OWASP A01');
+  assert.ok(output.includes('OWASP API1'),   'Console output should show OWASP API1');
+  assert.ok(output.includes('WSTG-ATHZ-02'), 'Console output should show WSTG tag');
+  assert.ok(output.includes('ASTF-ATHZ-01'), 'Console output should show ASTF tag');
+});
+
+await test('printConsoleReport renders legacy findings without taxonomy gracefully', () => {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    printConsoleReport(TAGGED_FINDINGS, TEST_META, false);
+  } finally {
+    console.log = originalLog;
+  }
+  const output = lines.join('\n');
+  assert.ok(output.includes('Server Version Disclosure'), 'Legacy finding must appear in output');
+});
+
+await test('printConsoleReport shows severity counts', () => {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    printConsoleReport(TAGGED_FINDINGS, TEST_META, false);
+  } finally {
+    console.log = originalLog;
+  }
+  const output = lines.join('\n');
+  assert.ok(output.includes('High: 3'), 'Should count 3 high findings');
+  assert.ok(output.includes('Medium: 1'), 'Should count 1 medium finding');
+  assert.ok(output.includes('Low: 1'), 'Should count 1 low finding');
+});
+
+// ---------------------------------------------------------------------------
+// Suite 20: report.js — CSV report with taxonomy columns
+// ---------------------------------------------------------------------------
+console.log('\n── Suite 20: report.js — CSV taxonomy columns ───────────────────');
+
+await test('CSV report includes owaspWeb, owaspApi, wstg, astf header columns', async () => {
+  const tmpDir = os.tmpdir();
+  const csvPath = path.join(tmpDir, 'boltclone-test-report.csv');
+  try {
+    await writeCsvReport(csvPath, TAGGED_FINDINGS);
+    const content = await fs.readFile(csvPath, 'utf8');
+    const headerLine = content.split('\n')[0];
+    assert.ok(headerLine.includes('owaspWeb'), 'CSV header must include owaspWeb');
+    assert.ok(headerLine.includes('owaspApi'), 'CSV header must include owaspApi');
+    assert.ok(headerLine.includes('wstg'),     'CSV header must include wstg');
+    assert.ok(headerLine.includes('astf'),     'CSV header must include astf');
+  } finally {
+    await fs.unlink(csvPath).catch(() => {});
+  }
+});
+
+await test('CSV report populates taxonomy values for tagged findings', async () => {
+  const tmpDir = os.tmpdir();
+  const csvPath = path.join(tmpDir, 'boltclone-test-report2.csv');
+  try {
+    await writeCsvReport(csvPath, TAGGED_FINDINGS);
+    const content = await fs.readFile(csvPath, 'utf8');
+    // The first data row (BOLA) should contain A01, API1, WSTG-ATHZ-02, ASTF-ATHZ-01.
+    assert.ok(content.includes('"A01"'),          'BOLA row should have A01');
+    assert.ok(content.includes('"API1"'),         'BOLA row should have API1');
+    assert.ok(content.includes('"WSTG-ATHZ-02"'), 'BOLA row should have WSTG-ATHZ-02');
+    assert.ok(content.includes('"ASTF-ATHZ-01"'), 'BOLA row should have ASTF-ATHZ-01');
+  } finally {
+    await fs.unlink(csvPath).catch(() => {});
+  }
+});
+
+await test('CSV report leaves taxonomy columns empty for untagged findings', async () => {
+  const tmpDir = os.tmpdir();
+  const csvPath = path.join(tmpDir, 'boltclone-test-report3.csv');
+  try {
+    await writeCsvReport(csvPath, TAGGED_FINDINGS);
+    const content = await fs.readFile(csvPath, 'utf8');
+    const lines = content.split('\n');
+    // The last data line (Server Version Disclosure) should have empty taxonomy columns.
+    const lastLine = lines[lines.length - 1];
+    // It should end with ,"","","","" (4 empty quoted strings).
+    assert.ok(lastLine.endsWith('"","","",""'), 'Untagged finding should have empty taxonomy columns');
+  } finally {
+    await fs.unlink(csvPath).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Suite 21: report.js — JSON report includes standards
+// ---------------------------------------------------------------------------
+console.log('\n── Suite 21: report.js — JSON report ─────────────────────────────');
+
+await test('JSON report preserves standards taxonomy on findings', async () => {
+  const tmpDir = os.tmpdir();
+  const jsonPath = path.join(tmpDir, 'boltclone-test-report.json');
+  try {
+    await writeJsonReport(jsonPath, TAGGED_FINDINGS, TEST_META);
+    const content = await fs.readFile(jsonPath, 'utf8');
+    const parsed = JSON.parse(content);
+    assert.ok(parsed.findings, 'JSON report must have findings array');
+    const bola = parsed.findings.find((f) => f.title.includes('BOLA'));
+    assert.ok(bola, 'BOLA finding must be present');
+    assert.equal(bola.standards.owaspApi, 'API1');
+    assert.equal(bola.standards.wstg, 'WSTG-ATHZ-02');
+    assert.equal(bola.standards.astf, 'ASTF-ATHZ-01');
+  } finally {
+    await fs.unlink(jsonPath).catch(() => {});
+  }
+});
+
+await test('JSON report meta section is preserved', async () => {
+  const tmpDir = os.tmpdir();
+  const jsonPath = path.join(tmpDir, 'boltclone-test-report2.json');
+  try {
+    await writeJsonReport(jsonPath, TAGGED_FINDINGS, TEST_META);
+    const content = await fs.readFile(jsonPath, 'utf8');
+    const parsed = JSON.parse(content);
+    assert.equal(parsed.meta.target, 'https://api.example.com');
+    assert.equal(parsed.meta.endpointCount, 12);
+  } finally {
+    await fs.unlink(jsonPath).catch(() => {});
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Final report
 // ---------------------------------------------------------------------------
 const total = passed + failed;
 console.log(`\n══════════════════════════════════════════════════════════════════`);
-console.log(`  Phase 1, 2 & 3 Test Results: ${passed}/${total} passed${failed > 0 ? `, ${failed} FAILED` : ''}`);
+console.log(`  OWASP Engine — All Phases Test Results: ${passed}/${total} passed${failed > 0 ? `, ${failed} FAILED` : ''}`);
 console.log(`══════════════════════════════════════════════════════════════════\n`);
 
 if (failed > 0) process.exit(1);

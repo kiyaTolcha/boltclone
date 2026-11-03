@@ -14,6 +14,28 @@ function paint(text, color, enabled) {
   return `${COLORS[color]}${text}${COLORS.reset}`;
 }
 
+/**
+ * Builds a parenthesized taxonomy tag string from the four-standard `standards`
+ * object attached to a finding by Phase 2/3 checks.
+ *
+ * Example output: "(OWASP API1 | WSTG-ATHZ-02 | ASTF-ATHZ-01)"
+ *
+ * Returns an empty string if no standards object exists (backward compat with
+ * findings generated before the OWASP engine was added).
+ *
+ * @param {object|null} standards  { owaspWeb, owaspApi, wstg, astf }
+ * @returns {string}
+ */
+function formatStandardsTags(standards) {
+  if (!standards) return '';
+  const parts = [];
+  if (standards.owaspWeb) parts.push(`OWASP ${standards.owaspWeb}`);
+  if (standards.owaspApi) parts.push(`OWASP ${standards.owaspApi}`);
+  if (standards.wstg)     parts.push(standards.wstg);
+  if (standards.astf)     parts.push(standards.astf);
+  return parts.length > 0 ? ` (${parts.join(' | ')})` : '';
+}
+
 export function printConsoleReport(findings, meta, color) {
   const sorted = [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
   const counts = { high: 0, medium: 0, low: 0, info: 0 };
@@ -32,7 +54,9 @@ export function printConsoleReport(findings, meta, color) {
 
   sorted.forEach((f) => {
     const sevTag = paint(`[${f.severity.toUpperCase()}]`, SEVERITY_COLOR[f.severity], color);
-    console.log(`${sevTag} ${paint(f.title, 'bold', color)}`);
+    const tags = formatStandardsTags(f.standards);
+    const tagsColored = tags ? paint(tags, 'cyan', color) : '';
+    console.log(`${sevTag} ${paint(f.title, 'bold', color)}${tagsColored}`);
     console.log(`  ${paint('category:', 'dim', color)} ${f.category}  ${paint('url:', 'dim', color)} ${f.url}`);
     console.log(`  ${paint('evidence:', 'dim', color)} ${f.evidence}`);
     console.log('');
@@ -49,10 +73,21 @@ function csvEscape(value) {
 }
 
 export async function writeCsvReport(path, findings) {
-  const headers = ['category', 'title', 'severity', 'url', 'evidence'];
+  const headers = ['category', 'title', 'severity', 'url', 'evidence', 'owaspWeb', 'owaspApi', 'wstg', 'astf'];
   const lines = [headers.join(',')];
   findings.forEach((f) => {
-    lines.push(headers.map((h) => csvEscape(f[h])).join(','));
+    const std = f.standards || {};
+    lines.push([
+      csvEscape(f.category),
+      csvEscape(f.title),
+      csvEscape(f.severity),
+      csvEscape(f.url),
+      csvEscape(f.evidence),
+      csvEscape(std.owaspWeb || ''),
+      csvEscape(std.owaspApi || ''),
+      csvEscape(std.wstg || ''),
+      csvEscape(std.astf || ''),
+    ].join(','));
   });
   await writeFile(path, lines.join('\n'), 'utf8');
 }
