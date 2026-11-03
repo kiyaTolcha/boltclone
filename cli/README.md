@@ -53,11 +53,31 @@ boltclone https://example.com --import-session session.json --vulndb --gemini-ke
 
 ## What it checks
 
-- **injection**: SQLi, reflected XSS, open redirect, directory traversal
+- **injection**: SQLi, reflected XSS, open redirect, directory traversal, SSTI, XXE
 - **access**: rate limiting, IDOR/BOLA, CSRF, CORS misconfiguration, SSRF, missing security headers
 - **tls**: certificate validity/expiry, weak protocol versions, weak ciphers
 - **deps**: frontend library fingerprinting + live lookup against OSV.dev for known CVEs; server/tech header disclosure
+- **cookies**: missing Secure, HttpOnly, and SameSite cookie attributes
+- **graphql**: introspection abuse, query batching, and field suggestion enumeration
+- **exposure**: sensitive files (.env, .git, dumps, metrics)
 - **auth** (opt-in, `--auth-test`): detects login endpoints and tests a small default-credential list; flags accepted weak/default credentials
 
 Exit code is `2` if any high-severity finding was reported, `1` on a scan
 error, `0` otherwise — usable as a CI gate.
+
+## Subdirectories & Boundaries
+- [CLI Binary Executable](./bin/README.md): Command-line executable entry point, process argument parsing, and exit code handling.
+- [CLI Core Engine](./src/README.md): Scanning orchestrator, HTTP networking, endpoint discovery, reports, spec generators, and vulnerability checks.
+
+## Invariants
+- Zero external runtime npm dependencies: standard Node.js 20+ runtime only.
+- Exit code contract: `0` for clean scans, `1` for execution failures, `2` for high/critical security findings.
+- Concurrency and timeouts strictly bounded per invocation.
+
+## Side Effects
+- Outbound network requests to target hosts, OSV.dev, crt.sh, and Google Gemini API.
+- Filesystem writes for requested report artifacts (`--json`, `--csv`, `--html`, `--openapi`, `--postman`).
+
+## Verification
+- Run: `node cli/bin/boltclone.js --help`
+- Run: `node cli/test/test-new-scanners.js`
