@@ -53,6 +53,7 @@ The architecture is partitioned into two cooperating subsystems:
 
 ## System Verification
 - Verify Chrome Extension: `node chrome-extension/test/test-chrome-extension.js`
+- Verify OWASP Engine: `node cli/test/test-owasp-engine.js`
 - Verify CLI Suite: `node cli/test/test-new-scanners.js`
 - Verify CLI Help Interface: `node cli/bin/boltclone.js --help`
 
