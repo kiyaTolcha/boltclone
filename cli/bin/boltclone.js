@@ -29,6 +29,10 @@ async function main() {
       categories: opts.categories,
       credsFile: opts.credsFile,
       importSession: opts.importSession,
+      secondaryAuth: opts.secondaryAuth,
+      allowMutatingMethods: opts.allowMutatingMethods,
+      dryRun: opts.dryRun,
+      rateLimit: opts.rateLimit,
       vulndb: opts.vulndb,
       geminiKey: opts.geminiKey,
       onProgress

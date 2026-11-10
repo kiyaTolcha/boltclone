@@ -6,6 +6,8 @@ The `cli/src` package contains the core orchestration, HTTP transport, session i
 ## Interface
 - `runScan({ target, concurrency, timeout, categories, credsFile, importSession, vulndb, geminiKey, onProgress, secondaryAuth, allowMutatingMethods, dryRun, rateLimit })`: Primary scanner entry point executing discovery, session normalizer, modular checks, CVE lookups, dual-context authorization testing, and reporting ([`scan.js:105`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/scan.js#L105)).
 - `normalizeTarget(value)`: Normalizes user-supplied URL inputs to standard HTTPS/HTTP origins without trailing slashes ([`scan.js:18`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/scan.js#L18)).
+- `parameterizeUrlPath(urlString)`: Normalizes path segments (numeric IDs, UUIDs, hex hashes) into canonical route templates like `/api/orders/{id}` ([`scan.js:31`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/scan.js#L31)).
+- `deduplicateTransactions(transactions, maxPerRoute)`: Deduplicates session transactions by route template to eliminate redundant mutation sweeps while preserving comparative BOLA pairs ([`scan.js:61`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/scan.js#L61)).
 - `parseCliArgs(argv)`: Parses command-line flags and options using `node:util.parseArgs` ([`args.js:56`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/args.js#L56)).
 - `groupById(logEntries)`: Merges split `chrome.webRequest` lifecycle events sharing an ID ([`ingestion.js:58`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/ingestion.js#L58)).
 - `decodeRequestBody(requestBody, contentType)`: Unpacks Chrome `{ raw: [{ text }] }` and `{ formData }` request body envelopes ([`ingestion.js:80`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/ingestion.js#L80)).
@@ -38,7 +40,7 @@ The `cli/src` package contains the core orchestration, HTTP transport, session i
 - Scope boundary enforcement: replayed transactions are strictly filtered against the target hostname; off-scope domains are dropped.
 - Synthetic traffic isolation: all requests sent via `timeoutFetch` include `X-Bolt-Test-Run` session UUID and `X-Synthetic-Test: true` for downstream APM filtering.
 - Concurrency bounded: all multi-request pipelines must execute via `pool()` respecting caller concurrency settings.
-- Rate limited: dispatch cadence governed by `createRateLimiter` (default 15 QPS).
+- Rate limited: dispatch cadence governed by `createRateLimiter` (default 15 RPS).
 
 ## Side Effects
 - Dispatches outbound HTTP/HTTPS requests to target hosts and third-party APIs (crt.sh, OSV.dev, Google Gemini API).

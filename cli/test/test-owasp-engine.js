@@ -25,6 +25,7 @@ import {
   DEFAULT_FUZZ_PAYLOADS,
 } from '../src/mutations.js';
 import { checkIdorBola, checkBfla } from '../src/checks/access.js';
+import { parameterizeUrlPath, deduplicateTransactions } from '../src/scan.js';
 
 // ---------------------------------------------------------------------------
 // Minimal test harness
@@ -435,10 +436,6 @@ await test('Decompresses gzip-encoded response bodies transparently', async () =
     server.close();
   }
 });
-
-// ---------------------------------------------------------------------------
-// Final report
-// ---------------------------------------------------------------------------
 
 // ── Phase 2 suites appended below ──────────────────────────────────────────
 
@@ -1399,6 +1396,46 @@ await test('JSON report meta section is preserved', async () => {
   } finally {
     await fs.unlink(jsonPath).catch(() => {});
   }
+});
+
+// ---------------------------------------------------------------------------
+// Suite 22: Optimization Engine — Route Deduplication & WAF Backoff
+// ---------------------------------------------------------------------------
+console.log('\n── Suite 22: Optimization Engine — Route Deduplication & WAF Backoff ──');
+
+await test('parameterizeUrlPath normalizes numeric IDs and UUIDs into route templates', () => {
+  const url1 = 'https://api.example.com/api/v1/orders/123/items/456?b=2&a=1';
+  const tmpl1 = parameterizeUrlPath(url1);
+  assert.equal(tmpl1, '/api/v1/orders/{id}/items/{id}?a&b');
+
+  const url2 = 'https://api.example.com/users/550e8400-e29b-41d4-a716-446655440000/profile';
+  const tmpl2 = parameterizeUrlPath(url2);
+  assert.equal(tmpl2, '/users/{uuid}/profile');
+});
+
+await test('deduplicateTransactions caps instances per route template', () => {
+  const txs = [
+    { method: 'GET', url: 'https://example.com/api/orders/1' },
+    { method: 'GET', url: 'https://example.com/api/orders/2' },
+    { method: 'GET', url: 'https://example.com/api/orders/3' },
+    { method: 'GET', url: 'https://example.com/api/orders/4' },
+    { method: 'POST', url: 'https://example.com/api/users' },
+  ];
+  const deduped = deduplicateTransactions(txs, 2);
+  assert.equal(deduped.length, 3, 'Expected 2 GET orders + 1 POST users');
+  assert.equal(deduped[0].url, 'https://example.com/api/orders/1');
+  assert.equal(deduped[1].url, 'https://example.com/api/orders/2');
+  assert.equal(deduped[2].url, 'https://example.com/api/users');
+});
+
+await test('createRateLimiter backoff pauses dispatching on WAF/429 signals', async () => {
+  const throttle = createRateLimiter(50);
+  await throttle();
+  const start = Date.now();
+  throttle.backoff(0.1); // Backoff for 100ms
+  await throttle();
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed >= 90, `Expected >=90ms backoff delay, got ${elapsed}ms`);
 });
 
 // ---------------------------------------------------------------------------

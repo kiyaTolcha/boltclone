@@ -6,7 +6,7 @@ The `cli/bin` directory contains the executable entry point for the BOLTCLONE CL
 ## Interface
 - Executable Entry Point: [`boltclone.js`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/bin/boltclone.js)
   - Invocation: `boltclone <target-url> [options]` or `node cli/bin/boltclone.js <target-url> [options]`
-  - Flags: `-c, --concurrency <n>`, `-t, --timeout <ms>`, `--skip <list>`, `--import-session <file>`, `--openapi <file>`, `--postman <file>`, `--html <file>`, `--gemini-key <key>`, `--vulndb`, `--auth-test`, `--creds <file>`, `--subdomains`, `--json <file>`, `--csv <file>`, `--no-color`.
+  - Flags: `-c, --concurrency <n>`, `-t, --timeout <ms>`, `--skip <list>`, `--import-session <file>`, `--secondary-auth <token>`, `--allow-mutating-methods`, `--dry-run`, `--rate-limit <rps>`, `--openapi <file>`, `--postman <file>`, `--html <file>`, `--gemini-key <key>`, `--vulndb`, `--auth-test`, `--creds <file>`, `--subdomains`, `--json <file>`, `--csv <file>`, `--no-color`.
 
 ## Invariants
 - Exit codes strictly adhere to the security scanning gate contract:

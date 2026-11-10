@@ -175,14 +175,18 @@ export async function checkIdorBola(target, timeout, options = {}) {
       }, 'BOLA'));
     }
 
-    // Probe 3: cross-tenant — secondary auth token.
+    // Probe 3: cross-tenant — secondary auth token or cookie.
     if (secondaryAuth) {
-      const crossHeaders = {
-        ...unauthHeaders,
-        authorization: secondaryAuth.startsWith('Bearer ')
+      const crossHeaders = { ...unauthHeaders };
+      if (secondaryAuth.toLowerCase().startsWith('cookie:')) {
+        crossHeaders['cookie'] = secondaryAuth.replace(/^cookie:\s*/i, '').trim();
+      } else if (secondaryAuth.includes('=')) {
+        crossHeaders['cookie'] = secondaryAuth.trim();
+      } else {
+        crossHeaders['authorization'] = secondaryAuth.startsWith('Bearer ')
           ? secondaryAuth
-          : `Bearer ${secondaryAuth}`,
-      };
+          : `Bearer ${secondaryAuth}`;
+      }
       const crossProbe = await probeJson(tx.url, { method: tx.method, headers: crossHeaders, standard: 'ASTF-ATHZ-01' }, timeout);
       if (crossProbe && crossProbe.status >= 200 && crossProbe.status < 300 && schemaSimilar(baseline.body, crossProbe.body)) {
         findings.push(finding({
@@ -190,7 +194,7 @@ export async function checkIdorBola(target, timeout, options = {}) {
           title: 'Confirmed BOLA — cross-tenant object access',
           severity: 'high',
           url: tx.url,
-          evidence: `User B (secondary token) received HTTP ${crossProbe.status} with matching response schema. Object at ${tx.url} is accessible across tenant boundaries. (OWASP API1 / WSTG-ATHZ-02 / ASTF-ATHZ-01)`,
+          evidence: `User B (secondary auth) received HTTP ${crossProbe.status} with matching response schema. Object at ${tx.url} is accessible across tenant boundaries. (OWASP API1 / WSTG-ATHZ-02 / ASTF-ATHZ-01)`,
         }, 'BOLA'));
       }
     }

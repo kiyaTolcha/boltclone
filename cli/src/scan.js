@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { pool, setDefaultRateLimit } from './http.js';
 import { normalizeSession } from './ingestion.js';
+import { generateIdorMutations, generateBflaMutations, generateParamMutations } from './mutations.js';
 import { discoverEndpoints, enumerateSubdomains } from './discovery.js';
 import { runInjectionChecks } from './checks/injection.js';
 import { runAccessChecks, checkIdorBola, checkBfla } from './checks/access.js';
@@ -19,6 +20,61 @@ export function normalizeTarget(value) {
   return new URL(withScheme).toString().replace(/\/$/, '');
 }
 
+/**
+ * Parameterizes a URL path by replacing dynamic IDs (integers, UUIDs, hex hashes)
+ * with placeholder tokens, producing a canonical route template.
+ * E.g., "/api/users/123/orders/550e8400-e29b-41d4-a716-446655440000"
+ *    -> "/api/users/{id}/orders/{uuid}"
+ *
+ * @param {string} urlString
+ * @returns {string}
+ */
+export function parameterizeUrlPath(urlString) {
+  try {
+    const parsed = new URL(urlString);
+    const segments = parsed.pathname.split('/').map((seg) => {
+      if (/^\d+$/.test(seg)) return '{id}';
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return '{uuid}';
+      if (/^[0-9a-f]{24,64}$/i.test(seg)) return '{hash}';
+      return seg;
+    });
+    // Canonicalize query parameter names (sorted keys without values)
+    const paramKeys = Array.from(parsed.searchParams.keys()).sort().join('&');
+    return `${segments.join('/')}${paramKeys ? `?${paramKeys}` : ''}`;
+  } catch {
+    return urlString;
+  }
+}
+
+/**
+ * Deduplicates transactions by route template.
+ * Retains at most `maxPerRoute` (default: 2) instances per template so that
+ * differential BOLA/IDOR checks have at least two distinct objects to compare,
+ * while eliminating dozens of redundant requests on the same endpoint.
+ *
+ * @param {TransactionDTO[]} transactions
+ * @param {number} [maxPerRoute=2]
+ * @returns {TransactionDTO[]}
+ */
+export function deduplicateTransactions(transactions, maxPerRoute = 2) {
+  const groups = new Map();
+  for (const tx of transactions) {
+    const template = `${tx.method} ${parameterizeUrlPath(tx.url)}`;
+    if (!groups.has(template)) {
+      groups.set(template, []);
+    }
+    const list = groups.get(template);
+    if (list.length < maxPerRoute) {
+      list.push(tx);
+    }
+  }
+  const result = [];
+  for (const list of groups.values()) {
+    result.push(...list);
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Pre-flight session token validity check
 // ---------------------------------------------------------------------------
@@ -34,7 +90,7 @@ export function normalizeTarget(value) {
  * @param {Function}         onProgress
  * @returns {Promise<boolean>}
  */
-async function validateSessionAuth(transactions, timeout, onProgress) {
+async function validateSessionAuth(transactions, timeout, onProgress, secondaryAuth = null) {
   // Find the first enriched transaction that carries an Authorization header.
   const enrichedTx = transactions.find(
     (tx) => tx.isEnriched && tx.headers?.authorization
@@ -61,6 +117,29 @@ async function validateSessionAuth(transactions, timeout, onProgress) {
   }
 
   onProgress?.(`Pre-flight: session token valid (HTTP ${resp.status} on ${enrichedTx.url}).`);
+
+  if (secondaryAuth) {
+    onProgress?.('Pre-flight: validating secondary auth token/cookie ...');
+    const secHeaders = { ...enrichedTx.headers };
+    if (secondaryAuth.toLowerCase().startsWith('cookie:')) {
+      secHeaders['cookie'] = secondaryAuth.replace(/^cookie:\s*/i, '').trim();
+    } else if (secondaryAuth.includes('=')) {
+      secHeaders['cookie'] = secondaryAuth.trim();
+    } else {
+      secHeaders['authorization'] = secondaryAuth.startsWith('Bearer ') ? secondaryAuth : `Bearer ${secondaryAuth}`;
+    }
+    try {
+      const secResp = await fetch(enrichedTx.url, {
+        method: enrichedTx.method,
+        headers: secHeaders,
+        signal: AbortSignal.timeout(timeout),
+      });
+      onProgress?.(`Pre-flight: secondary auth responded with HTTP ${secResp.status}.`);
+    } catch {
+      onProgress?.('Pre-flight: could not reach target to validate secondary auth — continuing.');
+    }
+  }
+
   return true;
 }
 
@@ -79,17 +158,36 @@ async function validateSessionAuth(transactions, timeout, onProgress) {
 function printDryRun(transactions, scanOptions, onProgress) {
   onProgress?.('DRY-RUN mode — no network requests will be dispatched for mutated transactions.\n');
   onProgress?.(`Session transactions: ${transactions.length}`);
+
+  let plannedIdor = 0;
+  let plannedBfla = 0;
+  let plannedParam = 0;
+
   for (const tx of transactions) {
     const method = tx.method.padEnd(7);
     const enriched = tx.isEnriched ? '[enriched]' : '[url-only]';
     const auth = tx.headers?.authorization ? `[auth: ${tx.headers.authorization.slice(0, 30)}...]` : '[no-auth]';
     onProgress?.(`  ${method} ${tx.url} ${enriched} ${auth}`);
+
+    for (const _ of generateIdorMutations(tx, scanOptions.allowMutatingMethods)) plannedIdor++;
+    if (scanOptions.secondaryAuth) {
+      for (const _ of generateBflaMutations(tx, scanOptions.secondaryAuth, scanOptions.allowMutatingMethods)) plannedBfla++;
+    }
+    for (const _ of generateParamMutations(tx, undefined, scanOptions.allowMutatingMethods)) plannedParam++;
   }
+
+  onProgress?.(`\nPlanned Mutations:`);
+  onProgress?.(`  IDOR/BOLA candidate probes:     ${plannedIdor}`);
+  onProgress?.(`  BFLA privilege probe mutations: ${plannedBfla}`);
+  onProgress?.(`  Parameter fuzz probes:          ${plannedParam}`);
+
   if (scanOptions.secondaryAuth) {
-    onProgress?.(`\nSecondary auth provided — dual-context BOLA/BFLA tests will be run.`);
+    onProgress?.(`\nSecondary auth provided — dual-context BOLA/BFLA tests active.`);
   }
   if (scanOptions.allowMutatingMethods) {
     onProgress?.('--allow-mutating-methods active — POST/PUT/PATCH/DELETE will be mutated.');
+  } else {
+    onProgress?.('Safe mode default — mutating verbs (POST/PUT/PATCH/DELETE) skipped.');
   }
   onProgress?.('\n(DRY-RUN complete — rerun without --dry-run to execute.)');
 }
@@ -148,6 +246,13 @@ export async function runScan({
       const parsed = JSON.parse(raw);
       transactions = normalizeSession(parsed, baseUrl);
       onProgress?.(`Session normalizer: ${transactions.length} transaction(s) scoped to ${hostname}.`);
+
+      const beforeCount = transactions.length;
+      transactions = deduplicateTransactions(transactions, 2);
+      if (transactions.length < beforeCount) {
+        const savedPct = Math.round((1 - transactions.length / beforeCount) * 100);
+        onProgress?.(`Route deduplication: condensed ${beforeCount} transactions to ${transactions.length} unique route templates (-${savedPct}% probe traffic).`);
+      }
     } catch (err) {
       onProgress?.(`Warning: Failed to parse session file: ${err.message}`);
     }
@@ -184,7 +289,7 @@ export async function runScan({
   // ---------------------------------------------------------------------------
   let sessionValid = true;
   if (transactions.length > 0) {
-    sessionValid = await validateSessionAuth(transactions, timeout, onProgress);
+    sessionValid = await validateSessionAuth(transactions, timeout, onProgress, secondaryAuth);
   }
 
   // ---------------------------------------------------------------------------

@@ -44,22 +44,66 @@ const SESSION_RUN_ID = randomUUID();
  * @returns {() => Promise<void>}
  */
 export function createRateLimiter(rps = 15) {
-  const intervalMs = 1000 / rps;
+  const intervalMs = Math.max(1, Math.floor(1000 / rps));
   let lastDispatch = 0;
+  let queue = [];
+  let timer = null;
+  let backoffUntil = 0;
 
-  return function throttle() {
+  function pump() {
+    const now = Date.now();
+    if (now < backoffUntil) {
+      timer = setTimeout(pump, backoffUntil - now);
+      return;
+    }
+    if (queue.length === 0) {
+      timer = null;
+      return;
+    }
+    lastDispatch = Date.now();
+    const resolve = queue.shift();
+    resolve();
+    if (queue.length > 0) {
+      timer = setTimeout(pump, intervalMs);
+    } else {
+      timer = null;
+    }
+  }
+
+  function throttle() {
     return new Promise((resolve) => {
       const now = Date.now();
-      const sinceLastMs = now - lastDispatch;
-      const waitMs = Math.max(0, intervalMs - sinceLastMs);
-      lastDispatch = now + waitMs;
-      if (waitMs === 0) {
-        resolve();
+      if (queue.length === 0 && !timer && now >= backoffUntil) {
+        const sinceLast = now - lastDispatch;
+        if (sinceLast >= intervalMs || lastDispatch === 0) {
+          lastDispatch = now;
+          resolve();
+          return;
+        }
+        const wait = intervalMs - sinceLast;
+        queue.push(resolve);
+        timer = setTimeout(pump, wait);
       } else {
-        setTimeout(resolve, waitMs);
+        queue.push(resolve);
+        if (!timer) {
+          const wait = Math.max(0, backoffUntil - now);
+          timer = setTimeout(pump, wait || intervalMs);
+        }
       }
     });
+  }
+
+  // Adaptive WAF/429 backoff helper: pauses dispatch queue for retryAfterSeconds
+  throttle.backoff = (retryAfterSeconds = 2) => {
+    const ms = Math.min(30_000, Math.max(1000, retryAfterSeconds * 1000));
+    backoffUntil = Date.now() + ms;
+    if (timer) {
+      clearTimeout(timer);
+      timer = setTimeout(pump, ms);
+    }
   };
+
+  return throttle;
 }
 
 // Module-level default throttle (15 QPS). Callers that need a different rate
@@ -182,12 +226,22 @@ export async function timeoutFetch(url, opts = {}, timeoutMs = 8000) {
   let resp;
   try {
     resp = await fetch(url, {
+      redirect: 'manual',
       ...fetchOpts,
       headers: mergedHeaders,
       signal: controller.signal,
     });
   } finally {
     clearTimeout(timer);
+  }
+
+  // Adaptive WAF / 429 backoff: if rate-limited, pause limiter queue.
+  if (resp && resp.status === 429) {
+    const retryHeader = resp.headers.get('retry-after');
+    const delaySec = retryHeader && !isNaN(retryHeader) ? parseInt(retryHeader, 10) : 2;
+    if (typeof throttle.backoff === 'function') {
+      throttle.backoff(delaySec);
+    }
   }
 
   // Transparently decompress before returning.

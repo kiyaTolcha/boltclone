@@ -172,12 +172,16 @@ export function normalizeSession(rawSessionData, targetBaseUrl) {
   } else if (rawSessionData && Array.isArray(rawSessionData.analysis)) {
     // Legacy format: analysis objects have url but no headers/body events.
     entries = rawSessionData.analysis;
+  } else if (rawSessionData && rawSessionData.meta && Array.isArray(rawSessionData.meta.importedTraffic)) {
+    // Re-importing a boltclone scan deliverable report.
+    entries = rawSessionData.meta.importedTraffic;
   } else {
     entries = [];
   }
 
   // --- 2. Merge split lifecycle events by request id ---
-  const merged = groupById(entries);
+  const indexed = entries.map((e, i) => (e && typeof e === 'object' && !e.id ? { id: `anon-${i}`, ...e } : e));
+  const merged = groupById(indexed);
 
   // --- 3. Resolve target hostname for scope filtering ---
   let targetHost;
