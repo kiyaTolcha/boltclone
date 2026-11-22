@@ -54,6 +54,13 @@ export async function checkDirectoryTraversal(url, timeout) {
 export async function checkSsti(url, timeout) {
   // Payloads for Jinja2, Twig, FreeMarker, EL, Pebble, Ruby ERB, Smarty
   const payloads = ['{{7*7}}', '${7*7}', '#{7*7}', '<%= 7*7 %>', '{% 7*7 %}', '*{7*7}', '{7*7}'];
+
+  // Baseline: fetch the URL without any payload to see if "49" already appears naturally.
+  // If it does, any "49" in a probed response is not caused by template evaluation.
+  const baselineResp = await safeFetch(url, { method: 'GET' }, timeout);
+  const baselineText = baselineResp ? await baselineResp.text().catch(() => '') : '';
+  const baselineHas49 = baselineText.includes('49');
+
   for (const payload of payloads) {
     const trial = withParam(url, 'q', payload);
     const resp = await safeFetch(trial.toString(), { method: 'GET' }, timeout);
@@ -64,18 +71,17 @@ export async function checkSsti(url, timeout) {
 
     if (!text.includes('49')) continue;
 
-    // --- SPA / client-side template false-positive guard ---
-    // If the response is HTML, the "49" must appear OUTSIDE of:
-    //   (a) any <script>...</script> block (Angular/React evaluation happens client-side)
-    //   (b) a JSON object embedded in a data-* attribute or window.__STATE__ assignment
-    // The simplest reliable signal: strip all <script> blocks and check if "49" remains.
+    // If "49" was already in the baseline response, it's not template evaluation.
+    if (baselineHas49) continue;
+
+    // For HTML responses: strip <script> and <style> blocks, then verify "49"
+    // appears as a standalone number in visible content (not inside tag attributes).
     if (ct.includes('text/html')) {
-      const stripped = text.replace(/<script[\s\S]*?<\/script>/gi, '');
-      // After stripping scripts, "49" must appear in visible HTML or a JSON response body.
-      // Also reject if the entire response is a single-page app shell (no visible text nodes
-      // containing "49" outside of attribute values and tags).
-      const visibleMatch = stripped.match(/(?<!["\w])49(?![\w"])/);
-      if (!visibleMatch) continue; // "49" only lived inside <script> — client-side eval, skip
+      const stripped = text
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '');
+      // Match "49" as a standalone token not buried in an HTML attribute or CSS value
+      if (!/(?<!["\w#\-])49(?![\w"%;])/.test(stripped)) continue;
     }
 
     return {

@@ -475,19 +475,34 @@ export async function checkApiVersioning(url, timeout) {
   const oldVersions = ['v0', 'v1', 'v2'].filter(
     (v) => !base.pathname.startsWith(`/${v}`) && !base.pathname.includes(`/${v}/`)
   );
+
+  // Fetch a baseline to detect SPA catch-all responses.
+  // If the versioned URL returns the same body as the base URL, it's a SPA fallback — not a real old API.
+  const baseResp = await safeFetch(url, {}, timeout);
+  const baseCt = baseResp ? (baseResp.headers.get('content-type') || '').toLowerCase() : '';
+  const baseText = baseResp ? await baseResp.text().catch(() => '') : '';
+  const baseIsHtml = baseCt.includes('text/html');
+
   for (const ver of oldVersions.slice(0, 2)) {
     const trial = new URL(base);
     trial.pathname = `/${ver}${base.pathname}`;
     const resp = await safeFetch(trial.toString(), {}, timeout);
-    if (resp && resp.status >= 200 && resp.status < 300) {
-      return finding({
-        category: 'access',
-        title: 'Stale API version accessible',
-        severity: 'medium',
-        url: trial.toString(),
-        evidence: `Older API version /${ver}/ responded with HTTP ${resp.status}. Legacy versions may lack current security patches.`,
-      }, 'STALE_API');
-    }
+    if (!resp || resp.status < 200 || resp.status >= 300) continue;
+
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
+    const text = await resp.text().catch(() => '');
+
+    // If both base and versioned path return text/html with identical bodies,
+    // this is an SPA catch-all 200 — not a real stale API version.
+    if (ct.includes('text/html') && baseIsHtml && text.slice(0, 2048) === baseText.slice(0, 2048)) continue;
+
+    return finding({
+      category: 'access',
+      title: 'Stale API version accessible',
+      severity: 'medium',
+      url: trial.toString(),
+      evidence: `Older API version /${ver}/ responded with HTTP ${resp.status}. Legacy versions may lack current security patches.`,
+    }, 'STALE_API');
   }
   return null;
 }
