@@ -231,7 +231,7 @@ The scanner organizes all detection modules across OWASP Web 2021, OWASP API 202
 
 ## 5. Detailed Implementation Plan
 
-The implementation is partitioned into four incremental, independently verifiable phases. Each phase maintains a buildable and testable codebase state.
+The implementation is partitioned into four phases; each phase leaves the codebase buildable and testable.
 
 ```
 Phase 1: Ingestion Normalizer & Transport Hardening
@@ -258,12 +258,13 @@ Phase 4: Multi-Standard Taxonomy Reporting & Test Harness
 | **Modify** | `cli/src/http.js` | Implements token-bucket rate limiting (default 15 RPS via `createRateLimiter` and `setDefaultRateLimit`), synthetic telemetry headers (`X-Bolt-Test-Run`), and manual redirect isolation. |
 | **Modify** | `cli/src/checks/access.js` | Integrates dual-context BOLA verification with `--secondary-auth`, adds BFLA role tampering check, and supports polymorphic transaction descriptors. |
 | **Modify** | `cli/src/scan.js` | Connects `ingestion.js` and `mutations.js`, executes pre-flight auth and secondary auth validation, orchestrates check pools, and implements `--dry-run` mutation preview. |
-| **Modify** | `cli/src/report.js` | Updates console, JSON, and CSV reports to display and filter findings by OWASP Web 2021, OWASP API 2023, WSTG, and ASTF identifiers with sensitive evidence masking. |
-| **Modify** | `cli/src/htmlReport.js` | Enhances executive HTML report with dedicated OWASP Top 10, WSTG, and ASTF compliance filter cards. |
-| **Create** | `cli/test/test-owasp-engine.js` | Automated verification test suite covering session ingestion, dual-context BOLA detection, BOPLA checks, rate limiting, and scope filtering. |
+| **Modify** | `cli/src/report.js` | Adds four-standard taxonomy tags (console two-line format, JSON `findings[].standards`, CSV columns `owaspWeb,owaspApi,wstg,astf`) to all report outputs; see § 2.3. |
+| **Modify** | `cli/src/htmlReport.js` | Adds `stdCounts`, `standardsBadges()`, `standardsDataAttrs()`, `filterStd()` helpers and 5 interactive taxonomy filter buttons to the HTML report; see § 2.3. |
+| **Create** | `cli/test/test-owasp-engine.js` | Automated verification test suite (22 suites) covering session ingestion, dual-context BOLA detection, BOPLA checks, rate limiting, and scope filtering. |
 | **Modify** | `cli/README.md` | Documents new flags, multi-standard testing workflows, and dual-context usage examples. |
-| **Modify** | `cli/src/README.md` | Updates package contract to reflect `ingestion.js`, `mutations.js`, and `bopla.js`. |
-| **Modify** | `cli/src/checks/README.md` | Updates check subsystem contract to document `bopla.js` and dual-context signatures. |
+| **Modify** | `cli/bin/README.md` | Updates binary entry-point contract to reflect new forwarded flags and exit codes. |
+| **Modify** | `cli/src/README.md` | Updates package contract to reflect `ingestion.js`, `mutations.js`, and `bopla.js` with corrected line anchors. |
+| **Modify** | `cli/src/checks/README.md` | Updates check subsystem contract to document `bopla.js`, dual-context signatures, and correct line anchors. |
 
 ---
 
@@ -272,24 +273,28 @@ Phase 4: Multi-Standard Taxonomy Reporting & Test Harness
 #### Step 1.1: Create Session Ingestion Normalizer (`cli/src/ingestion.js`)
 * **Functions to Implement**:
   - `groupById(logEntries)`: Ingests an array of raw Chrome webRequest event logs. Groups entries by `entry.id`, merging properties across `onBeforeRequest` (URL, method, requestBody), `onSendHeaders` (requestHeaders), and `onHeadersReceived` (statusCode, responseHeaders).
-  - `decodeRequestBody(requestBody, contentType)`: Unpacks `{ raw: [{ text }] }` stringified JSON into JavaScript objects; decodes `{ formData: { key: [val] } }` into standard maps; returns `{ decoded: object|string|null, format: 'json'|'form'|'raw'|'empty' }`.
-  - `sanitizeHeaders(headersArray)`: Converts `[{ name, value }]` to a lower-cased `Record<string, string>`. Drops `host`, `content-length`, `connection`, `transfer-encoding`, `upgrade-insecure-requests`, and `sec-ch-ua*`.
-  - `normalizeSession(rawSessionData, targetBaseUrl)`: Sniffs root envelope (`boltcloneTraffic`, `analysis`, or raw Array). Runs `groupById`, filters transactions by `new URL(tx.url).hostname === new URL(targetBaseUrl).hostname`, decodes bodies, sanitizes headers, and returns canonical `TransactionDTO[]`.
-* **Zero-Decision Enforcement**: If an imported file contains only `analysis` objects without headers/body, `normalizeSession` extracts only URLs and returns transactions with `isEnriched: false`.
+  - `decodeRequestBody(requestBody, contentType)`: Unpacks `{ raw: [{ text }] }` multi-chunk concatenation; sniffs `application/+json` MIME type; falls back on `SyntaxError`; flattens `{ formData: { key: [val] } }` into standard maps. Returns `{ decoded: object|string|null, format: 'json'|'form'|'raw'|'empty' }`.
+  - `sanitizeHeaders(headersArray)`: Converts `[{ name, value }]` to a lower-cased `Record<string, string>`. Drops an explicit 24-entry `NOISE_HEADERS` Set: `host`, `content-length`, `connection`, `transfer-encoding`, `upgrade-insecure-requests`, `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `sec-ch-ua-arch`, `sec-ch-ua-bitness`, `sec-ch-ua-full-version`, `sec-ch-ua-full-version-list`, `sec-ch-ua-model`, `sec-ch-ua-wow64`, `sec-fetch-dest`, `sec-fetch-mode`, `sec-fetch-site`, `sec-fetch-user`, `dnt`, `pragma`, `cache-control`, `te`, `accept-encoding`, `accept-language`. Applied to both `requestHeaders` and `responseHeaders`.
+  - `normalizeSession(rawSessionData, targetBaseUrl)`: Sniffs root envelope from four supported shapes: `{ boltcloneTraffic: [...] }`, `{ analysis: [...] }`, `{ meta: { importedTraffic: [...] } }`, or raw `Array`. Runs `groupById`, filters transactions by `new URL(tx.url).hostname === new URL(targetBaseUrl).hostname`, decodes bodies, sanitizes headers, and returns canonical `TransactionDTO[]` (9 fields: `id`, `url`, `method`, `headers`, `body`, `statusCode`, `responseHeaders`, `isEnriched`, `targetHost`). ID fallback: `anon-${i}` for entries without a usable id. Hostname filter: on `URL` parse failure `targetHost = null` (fail-open — transaction is **kept** if `targetHost` cannot be determined).
+* **Degraded-Enrichment Fallback**: If an imported file contains only `analysis` objects without headers/body, `normalizeSession` extracts only URLs and returns transactions with `isEnriched: false`.
 
 #### Step 1.2: Harden HTTP Transport & Rate Limiting (`cli/src/http.js`)
 * **Functions to Implement / Modify**:
-  - `createRateLimiter(rps = 15)`: Implements a token-bucket algorithm ensuring dispatch rates do not exceed `rps` requests per second.
-  - `setDefaultRateLimit(rps)`: Configures global rate limiter ceiling for the scanner.
+  - `createRateLimiter(rps = 15)`: Implements a **fixed-interval (`Math.floor(1000 / rps)` ms) FIFO pacing queue** — `throttle()` resolves when the slot is free. Returns `{ throttle: async () => void, backoff: (retryAfterSeconds = 2) => void }`. `.backoff()` inserts a mandatory delay clamped to 1 s–30 s (default 2 s), used by `safeFetch` on HTTP 429.
+  - `setDefaultRateLimit(rps)`: Configures global rate limiter ceiling for the scanner. Called during `runScan()` startup.
+  - `getSessionRunId()`: Returns the unique session UUID v4 (created once per process via `node:crypto.randomUUID()`) used for APM telemetry isolation.
+  - `safeFetch(url, opts, timeoutMs)`: Non-throwing wrapper around `timeoutFetch`; returns `null` on any error.
+  - `pool(items, limit, worker)`: Bounded-concurrency promise pool runner.
   - Update `timeoutFetch(url, opts, timeoutMs)`:
-    - Sets `redirect: 'manual'` to prevent automated transmission of credentials across off-target 3xx redirects.
+    - Calls `await throttle()` **before** the `AbortController` timer starts to avoid charging timeout against queue wait.
+    - `timeoutFetch` sets `redirect: 'manual'` to prevent automated transmission of credentials across off-target 3xx redirects.
     - Injects synthetic identification headers on every request:
-      - `X-Bolt-Test-Run`: Active session UUID generated via `node:crypto.randomUUID()`.
+      - `X-Bolt-Test-Run`: Active session UUID from `getSessionRunId()`.
       - `X-Synthetic-Test: true`
-      - `X-Bolt-Standard`: Standard identifier tag passed in `opts`.
+      - `X-Bolt-Standard`: Standard identifier tag passed in `opts.standard`.
       - `User-Agent: BOLTCLONE-SecurityScanner/1.0.0`
-    - Supports transparent decompression: if `content-encoding` is `gzip` or `br`, decompresses body bytes via `zlib.gunzipSync()` or `zlib.brotliDecompressSync()`, or lets native `fetch` decompress automatically.
-* **Verification Checkpoint**: Run `node cli/bin/boltclone.js --help` to confirm valid compilation and argument flags.
+    - Transparent decompression via `decompressResponse`: buffers `arrayBuffer()` for `content-encoding: gzip` (`zlib.gunzipSync`), `br` (`zlib.brotliDecompressSync`), and `deflate` (`zlib.inflateSync`); strips `content-encoding` and `content-length` response headers; returns raw bytes on decompression error (no silent discard).
+* **Verification Checkpoint**: Run `node cli/bin/boltclone.js --help` to confirm the process starts without error.
 
 ---
 
@@ -297,23 +302,29 @@ Phase 4: Multi-Standard Taxonomy Reporting & Test Harness
 
 #### Step 2.1: Create Mutation & Tampering Engine (`cli/src/mutations.js`)
 * **Functions to Implement**:
-  - `*generateIdorMutations(tx, allowMutating = false)`: Analyzes `tx.url`. If method is not `GET`/`HEAD`/`OPTIONS` and `allowMutating` is false, returns immediately. Detects integer path segments (tests `ID + 1`, `ID - 1`), UUID v4 segments (tests swapped byte / adjacent UUID), and query parameter IDs (`?id=`, `?user_id=`). Yields candidate mutation objects `{ tx, mutatedUrl, mutatedBody, mutatedHeaders, mutationType: 'IDOR' }`.
-  - `*generateBflaMutations(tx, secondaryAuthToken, allowMutating = false)`: Targets privileged administrative paths (`/admin`, `/manage`, `/superuser`, etc.), yielding two mutations:
-    1. Unauthenticated mutation: strips `Authorization` and cookie headers.
-    2. Cross-tenant mutation: replaces `Authorization` with `secondaryAuthToken`.
-  - `*generateParamMutations(tx, payloads, allowMutating = false)`: Injects fuzz vectors across query strings and JSON object keys without corrupting overall JSON syntax.
+  - `*generateIdorMutations(tx, allowMutating = false)`: Analyzes `tx.url`. If method is not `GET`/`HEAD`/`OPTIONS` and `allowMutating` is false, returns immediately. Skips entries where the numeric ID segment `n < 0`. Detects integer path segments (tests `ID + 1`, `ID - 1`), UUID v4 segments (increments the final 12-hex-digit group by `1n mod 0xffffffffffffn`), and query parameter IDs (21-entry `ID_PARAM_KEYS`: `id`, `user_id`, `account_id`, `customer_id`, `order_id`, `item_id`, `resource_id`, `object_id`, `record_id`, `entity_id`, `profile_id`, `post_id`, `comment_id`, `ticket_id`, `invoice_id`, `payment_id`, `session_id`, `token_id`, `file_id`, `doc_id`, `ref`). Yields candidate mutation objects `{ tx, mutatedUrl, mutatedBody, mutatedHeaders, mutationType: 'IDOR', mutationDetail }`.
+  - `*generateBflaMutations(tx, secondaryAuthToken, allowMutating = false)`: Only targets URLs matching 11 `PRIVILEGED_PATH_PATTERNS` regexes: `/admin`, `/manage`, `/superuser`, `/root`, `/internal`, `/staff`, `/privileged`, `/system`, `/backoffice`, `/console`, `/superadmin` (each as case-insensitive path-segment match). `allowMutating` gates `POST`/`PUT`/`PATCH` on this generator too. Yields two mutations:
+    1. `BFLA_UNAUTH`: strips `Authorization` and `Cookie` headers. Auth prefix: `Bearer ` is auto-prepended when `secondaryAuthToken` does not already contain `:` or `=`.
+    2. `BFLA_CROSSTENANT`: replaces `Authorization` with `Bearer <secondaryAuthToken>` (cookie headers are **not** parsed for BFLA mutations).
+    Each yielded object includes `mutationDetail`.
+  - `*generateParamMutations(tx, payloads, allowMutating = false)`: Injects 15 `DEFAULT_FUZZ_PAYLOADS` (4 SQLi: `' OR '1'='1`, `'; DROP TABLE users;--`, `1 OR 1=1`, `' UNION SELECT NULL--`; 2 XSS: `<script>alert(1)</script>`, `"><img src=x onerror=alert(1)>`; 2 path traversal: `../../../etc/passwd`, `..%2F..%2Fetc%2Fpasswd`; 2 SSTI: `{{7*7}}`, `${7*7}`; 5 null/boundary: `null`, `undefined`, `0`, `-1`, `99999999`) across query strings and JSON object keys. `injectIntoJsonBody` only injects into top-level `string|number` scalar values (not nested objects or arrays). Yields `{ tx, mutatedUrl, mutatedBody, mutatedHeaders, mutationType: 'PARAM_FUZZ', mutationDetail }`.
+* **Consumer note**: `mutations.js` generators are consumed by `printDryRun()` for aggregate mutation counts. Active scan checks (`access.js`, `bopla.js`) build their own probes independently and do **not** iterate these generators.
 
 #### Step 2.2: Implement Dual-Context Oracle in `cli/src/checks/access.js`
 * **Functions to Modify**:
   - Update `checkIdorBola(target, timeout, options = {})`:
+    - **Trigger**: fires when `tx.isEnriched && tx.headers?.authorization` (presence of auth header on an enriched transaction; does **not** require `options.secondaryAuth` to be set).
     - Handles polymorphic `target`: string URL or `TransactionDTO`.
-    - If `TransactionDTO` has auth headers and `options.secondaryAuth` is set (supports Bearer token or `Cookie:` string):
-      1. Dispatches baseline request with original credentials (asserts HTTP 200).
-      2. Dispatches unauthenticated probe with stripped credentials (verifies route requires authentication; flags missing auth if 200 returned).
-      3. Dispatches cross-tenant probe with `options.secondaryAuth`. If the route required auth (probe 2 returned 401/403) and probe 3 returns 200 with matching JSON body structure (>= 50% key overlap), flags confirmed **BOLA (OWASP API1 / WSTG-ATHZ-02 / ASTF-ATHZ-01)** at `high` severity.
+    - If `TransactionDTO` has auth headers and `options.secondaryAuth` is set:
+      1. **Probe 1** — baseline request with original credentials (asserts 2xx, i.e. HTTP 200–299).
+      2. **Probe 2** — unauthenticated probe with stripped credentials. If 2xx returned: flags `'Potential unauthenticated access (BOLA/IDOR)'` at `medium` severity, standard `BOLA`. Probe 3 runs regardless of Probe 2 outcome.
+      3. **Probe 3** — cross-tenant probe with `options.secondaryAuth`. Resolves auth format: `Cookie:` prefix → cookie header; value contains `=` without `Bearer ` prefix → cookie header; otherwise → `Bearer <token>`. If 2xx returned and JSON schema similarity (`shared / Math.max(keysA.size, keysB.length) >= 0.5`), flags `'Confirmed BOLA — cross-tenant object access'` at `high` severity, standards `ASTF-ATHZ-01`.
     - If `target` is a plain string URL, falls back to legacy path-increment check.
-  - Implement `checkBfla(tx, timeout, secondaryAuth)`: Tests administrative routes (`/admin/`, `/manage/`, `/api/v1/users/delete`) under secondary/unprivileged tokens (WSTG-ATHZ-03 / ASTF-ATHZ-02).
-* **Verification Checkpoint**: Unit test `checkIdorBola` and `checkBfla` with mock server instances.
+  - Implement `checkBfla(tx, timeout, secondaryAuth)`:
+    - **Probe A** (unauthenticated): strips `Authorization` and `Cookie` headers, dispatches to URL. Tags `WSTG-ATHZ-03`. Only fires on URLs matching `PRIVILEGED_PATH_PATTERNS`. Uses `Bearer`-only secondary auth (no cookie parsing).
+    - **Probe B** (cross-tenant): replaces auth with `Bearer <secondaryAuth>`. Tags `ASTF-ATHZ-02`.
+  - `STANDARDS` map covers all 10 check categories: `BOLA`, `BFLA`, `RATE_LIMIT`, `CORS`, `CSRF`, `SSRF`, `SECURITY_HEADERS`, `XST`, `HOST_INJECT`, `STALE_API`.
+* **Verification Checkpoint**: Run `node cli/test/test-owasp-engine.js` — Suites 15 and 16 must pass.
 
 ---
 
@@ -321,50 +332,90 @@ Phase 4: Multi-Standard Taxonomy Reporting & Test Harness
 
 #### Step 3.1: Create Property-Level Authorization Check (`cli/src/checks/bopla.js`)
 * **Functions to Implement**:
-  - `checkExcessiveDataExposure(tx, responseBody)`: Scans response JSON bodies for sensitive PII/secrets (`password_hash`, `ssn`, `private_key`, `secret_token`, `credit_card`). Active scans perform a baseline GET probe to populate `responseBody` if not present in session dump. Flags **OWASP API3 / WSTG-INFO-05**.
-  - `checkMassAssignment(tx, timeout, allowMutating = false)`: For JSON endpoints accepting payloads, injects administrative property overrides (`{"isAdmin": true}`, `{"role": "admin"}`, `{"verified": true}`). If server responds with HTTP 200/201 and reflects the injected property in the response, flags **OWASP API3 / WSTG-BUSL-07 / ASTF-ATHZ-03** at `high` severity.
-  - `runBoplaChecks(tx, timeout, options)`: Aggregates property exposure and mass assignment tests.
+  - `checkExcessiveDataExposure(tx, responseBody)`: **Strictly passive** — performs no network calls. `scan.js` passes `responseBody: null` for most transactions (body not captured by extension). Scans response JSON bodies for 41 `SENSITIVE_KEYS` (e.g. `password_hash`, `ssn`, `private_key`, `secret_token`, `credit_card`, `api_key`, etc.) and 4 `SENSITIVE_VALUE_PATTERNS` (SSH private key `-----BEGIN`, JWT three-dot format, AWS access key `AKIA[0-9A-Z]{16}`, generic secret hex 32+ chars). `collectStringValues` traverses up to `maxDepth = 3` and caps arrays at 10 items. Flags **OWASP API3 / WSTG-INFO-05**.
+  - `checkMassAssignment(tx, timeout, allowMutating = false)`: For JSON `POST`/`PUT`/`PATCH` endpoints (`isWriteMethod = /^(POST|PUT|PATCH)$/i` — **not** `DELETE`), injects 11 `MASS_ASSIGN_PAYLOADS` one at a time: `isAdmin`, `role`, `verified`, `active`, `banned`, `premium`, `credits`, `price`, `discount`, `userType`, `permissions`. Skips any key already present in the base request body (`key in baseBody`). Stops after the first confirmed finding (`break`). If server responds with 2xx and reflects the injected property in the response, flags **OWASP API3 / WSTG-BUSL-07 / ASTF-ATHZ-03** at `high` severity.
+  - `runBoplaChecks(tx, timeout, { allowMutating = false, responseBody = null })`: Aggregates property exposure and mass assignment tests. Returns `finding[]|null`.
 
 #### Step 3.2: Update CLI Flags & Scanner Integration (`cli/src/args.js`, `cli/bin/boltclone.js`, `cli/src/scan.js`)
 * **CLI Arguments to Add (`cli/src/args.js`)**:
-  - `--secondary-auth <token|cookie>`: Auth token or cookie for User B to power dual-context BOLA/BFLA verification.
-  - `--allow-mutating-methods`: Explicit opt-in enabling parameter fuzzing on `POST`, `PUT`, `DELETE`.
+  - `--secondary-auth <token>`: Auth token for User B to power dual-context BOLA/BFLA verification. (`Cookie:` prefix accepted at runtime resolution — not `<token|cookie>` in the flag syntax.)
+  - `--allow-mutating-methods`: Explicit opt-in enabling parameter fuzzing on `POST`, `PUT`, `PATCH`.
   - `--dry-run`: Prints planned mutated requests without dispatching network packets.
-  - `--rate-limit <rps>`: Configures maximum requests per second (default: 15).
+  - `--rate-limit <rps>`: Configures maximum requests per second (default: 15). Clamped via `Math.max(1, parseInt(value, 10) || 15)`.
+  - `bopla` is a valid value in `--skip` (e.g. `--skip bopla`) and maps to `categories.bopla = !skip.has('bopla')`.
 * **CLI Executable Forwarding (`cli/bin/boltclone.js`)**:
   - Unpacks `opts.secondaryAuth`, `opts.allowMutatingMethods`, `opts.dryRun`, and `opts.rateLimit` and forwards them into `runScan()`.
 * **Orchestrator Wiring (`cli/src/scan.js`)**:
-  - Reads session file via `ingestion.normalizeSession()`.
-  - Runs pre-flight auth check: validates primary captured credentials and `--secondary-auth` (if provided). If primary returns 401/403, warns user: `"Session token expired or invalid; aborting authenticated tests"`.
-  - Wires `mutations.js` into `printDryRun()` to display generated candidate mutations and planned counts.
-  - Dispatches `runScan` pool executing `access.js`, `bopla.js`, `injection.js`, `cookies.js`, `graphql.js`, and `exposure.js`.
+  - `runScan()` calls `setDefaultRateLimit(rateLimit)` at startup.
+  - Reads session file via `ingestion.normalizeSession()`; on JSON parse error, logs warning and continues with empty transactions.
+  - `dryRun` short-circuit: returns `{ findings: [], meta: { target, transactions, dryRun: true, ... } }` immediately after calling `printDryRun()`.
+  - Applies `parameterizeUrlPath` to normalize route templates, then `deduplicateTransactions(transactions, 2)` to cap per-route pairs.
+  - Runs pre-flight auth check via `validateSessionAuth`: uses raw `fetch()` (not `safeFetch`), dispatches a `GET` to the enriched `authorization` transaction, **fails open** on network errors, logs validation status without aborting, and validates secondary auth by probing the same transaction.
+  - Four separate execution pools:
+    1. URL-based `injection`/`access` checks on `scanTargets`.
+    2. `checkIdorBola` / `checkBfla` on `transactions`.
+    3. `runBoplaChecks` on `transactions`.
+    4. Side-channel checks (`tls`, `deps`, `cookies`, `graphql`, `exposure`) on `baseUrl`/`hostname`/`scanTargets`.
+  - Standards tags (`standards: { owaspWeb, owaspApi, wstg, astf }`) are emitted by `checkIdorBola`, `checkBfla`, `runBoplaChecks`, and `vulndb.js` entries. Other checkers omit the `standards` field.
+  - Runs pre-flight auth check: if primary returns 401/403, logs: `` `Warning: Session token expired or invalid; aborting authenticated tests.` ``
 
 ---
 
 ### 5.5 Phase 4: Multi-Standard Reporting, Contract Synchronization & Test Harness
 
-#### Step 5.1: Multi-Standard Reporting Updates (`cli/src/report.js` & `cli/src/htmlReport.js`)
-* **Console Reporter (`report.js`)**: Displays four-standard taxonomy tags next to findings:
-  `[HIGH] BOLA Detected - /api/orders/102 (OWASP API1 | WSTG-ATHZ-02 | ASTF-ATHZ-01)`
-* **HTML Dashboard (`htmlReport.js`)**: Adds interactive filter buttons allowing users to view findings partitioned by:
-  - All Findings
-  - OWASP Top 10 Web (2021)
-  - OWASP API Security Top 10 (2023)
-  - OWASP WSTG v4.2
-  - OWASP ASTF Workflows
+#### Step 4.1: Multi-Standard Reporting Updates (`cli/src/report.js` & `cli/src/htmlReport.js`)
+* **Console Reporter (`report.js`)**: Renders four-standard taxonomy tags in a two-line format per finding:
+  ```
+  [HIGH] BOLA Detected - /api/orders/102
+        OWASP API1 | WSTG-ATHZ-02 | ASTF-ATHZ-01
+  ```
+  No filtering or redaction of evidence is implemented. Interactive taxonomy filtering is in `htmlReport.js` only.
+* **JSON Reporter (`report.js`)**: `writeJsonReport` preserves `findings[].standards` (`{ owaspWeb, owaspApi, wstg, astf }`) on each finding object.
+* **CSV Reporter (`report.js`)**: `writeCsvReport` headers: `category,title,severity,url,evidence,owaspWeb,owaspApi,wstg,astf`.
+* **HTML Dashboard (`htmlReport.js`)**: Adds interactive taxonomy infrastructure:
+  - `stdCounts`: object tallying findings per standard across all four axes.
+  - `standardsBadges()`: renders coloured badge chips per finding.
+  - `standardsDataAttrs()`: emits `data-std-*` attributes on finding rows for filter targeting.
+  - `filterStd(std)`: client-side JS function toggling row visibility by standard.
+  - 5 interactive filter buttons matching exactly the labels in `htmlReport.js:281-284`:
+    - `All Findings`
+    - `OWASP Top 10 Web 2021`
+    - `OWASP API Top 10 2023`
+    - `OWASP WSTG v4.2`
+    - `OWASP ASTF`
+  - 5 `remediations` entries covering Phase 3 and Phase 4 findings (BOLA, BFLA, excessive data exposure, mass assignment, stale API).
 
-#### Step 5.2: Automated Test Suite (`cli/test/test-owasp-engine.js`)
-* **Test Assertions to Implement**:
-  1. `ingestion.js`: Merges 3 split webRequest events with matching `id` into 1 unified transaction.
-  2. `ingestion.js`: Decodes `{ raw: [{ text: "{\"id\":1}" }] }` into `{ id: 1 }`.
-  3. `ingestion.js`: Drops transactions targeting off-scope hosts (`evil.example.com`).
-  4. `mutations.js`: Generates IDOR mutations for integer, UUID, and query param targets.
-  5. `mutations.js`: Skips `DELETE` and `PUT` endpoints when `allowMutatingMethods` is false.
-  6. `access.js`: Flags confirmed BOLA when secondary auth receives HTTP 200 with matching schema.
-  7. `bopla.js`: Detects mass assignment when injected `isAdmin` is accepted by mock server.
-  8. `http.js`: Injects `X-Bolt-Test-Run` and `X-Synthetic-Test: true` on dispatched requests.
-* **Verification Command**:
-  - Run: `node cli/test/test-owasp-engine.js`
+#### Step 4.2: Automated Test Suite (`cli/test/test-owasp-engine.js`)
+* **Test Harness**: `createMockServer(handler)` spins up a local `node:http` server for probe isolation; `test(name, fn)` is a minimal assertion helper (both defined at L36–59 of the test file).
+* **22 Implemented Suites**:
+  1. `groupById` merging (3 split webRequest events → 1 transaction)
+  2. `decodeRequestBody` JSON decode (`{ raw: [{ text: '{"id":1}' }] }` → `{ id: 1 }`)
+  3. `normalizeSession` scope filtering (drops off-scope `evil.example.com` transactions)
+  4. `sanitizeHeaders` NOISE_HEADERS drop
+  5. `http.js` synthetic headers injection (`X-Bolt-Test-Run`, `X-Synthetic-Test`)
+  6. `createRateLimiter` FIFO pacing
+  7. `safeFetch` returns `null` on error
+  8. `decompressResponse` gzip/br/deflate
+  9. `generateIdorMutations` integer path segments
+  10. `generateIdorMutations` UUID path segments
+  11. `generateIdorMutations` query param IDs
+  12. `generateIdorMutations` skips non-idempotent verbs without `allowMutating`
+  13. `generateBflaMutations` BFLA_UNAUTH and BFLA_CROSSTENANT
+  14. `generateParamMutations` query string injection
+  15. `checkIdorBola` dual-context BOLA detection
+  16. `checkBfla` function-level auth
+  17. `checkExcessiveDataExposure` PII field scan
+  18. `checkMassAssignment` injection + server acceptance
+  19. `runBoplaChecks` aggregation
+  20. `args.js` Phase 3 flags parsing
+  21. `htmlReport.js` standard filter buttons
+  22. `report.js` console/CSV/JSON taxonomy tags
+* **Phase Checkpoints**:
+  - After Phase 1: `node cli/test/test-owasp-engine.js` — Suites 1–8 must pass.
+  - After Phase 2: Suites 9–16 must pass.
+  - After Phase 3: `node cli/bin/boltclone.js --dry-run --import-session <file>` exits cleanly; Suites 17–19 must pass.
+  - Full suite: `node cli/test/test-owasp-engine.js` — all 22 suites must pass.
 
-#### Step 5.3: Contract & Documentation Synchronization
-* Update [`README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/README.md), [`cli/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/README.md), [`cli/src/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/README.md), and [`cli/src/checks/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/checks/README.md) to document all newly exported modules, function signatures, invariants, and CLI argument flags.
+#### Step 4.3: Contract & Documentation Synchronization
+* Update [`README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/README.md), [`cli/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/README.md), [`cli/bin/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/bin/README.md), [`cli/src/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/README.md), and [`cli/src/checks/README.md`](file:///c:/Users/HUAWEI/Documents/Projects/boltclone/cli/src/checks/README.md) to document all newly exported modules, function signatures, invariants, and CLI argument flags.
+* Sync all line anchors in `cli/src/README.md` and `cli/src/checks/README.md` to match actual implemented line numbers (verify with `grep -n` after each phase merge).
