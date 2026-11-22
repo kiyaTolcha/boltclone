@@ -58,16 +58,33 @@ export async function checkSsti(url, timeout) {
     const trial = withParam(url, 'q', payload);
     const resp = await safeFetch(trial.toString(), { method: 'GET' }, timeout);
     if (!resp || resp.status < 200 || resp.status >= 300) continue;
+
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
     const text = await resp.text().catch(() => '');
-    if (text.includes('49')) {
-      return {
-        category: 'injection',
-        title: 'Potential Server-Side Template Injection (SSTI)',
-        severity: 'high',
-        url: trial.toString(),
-        evidence: `Payload "${payload}" was evaluated — response contained "49" (7×7).`
-      };
+
+    if (!text.includes('49')) continue;
+
+    // --- SPA / client-side template false-positive guard ---
+    // If the response is HTML, the "49" must appear OUTSIDE of:
+    //   (a) any <script>...</script> block (Angular/React evaluation happens client-side)
+    //   (b) a JSON object embedded in a data-* attribute or window.__STATE__ assignment
+    // The simplest reliable signal: strip all <script> blocks and check if "49" remains.
+    if (ct.includes('text/html')) {
+      const stripped = text.replace(/<script[\s\S]*?<\/script>/gi, '');
+      // After stripping scripts, "49" must appear in visible HTML or a JSON response body.
+      // Also reject if the entire response is a single-page app shell (no visible text nodes
+      // containing "49" outside of attribute values and tags).
+      const visibleMatch = stripped.match(/(?<!["\w])49(?![\w"])/);
+      if (!visibleMatch) continue; // "49" only lived inside <script> — client-side eval, skip
     }
+
+    return {
+      category: 'injection',
+      title: 'Potential Server-Side Template Injection (SSTI)',
+      severity: 'high',
+      url: trial.toString(),
+      evidence: `Payload "${payload}" was evaluated — response contained "49" (7×7) outside script context.`
+    };
   }
   return null;
 }
