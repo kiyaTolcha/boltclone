@@ -9,59 +9,61 @@ const COMMON_PATHS = [
 ];
 
 /**
- * Fetches the root page and returns a fingerprint used to detect SPA catch-all
- * responses. Returns { hash, contentType } where hash is an MD5-ish of the
- * first 4 KB of the body, or null on network failure.
+ * Fetches the root page (following redirects) and returns a body fingerprint
+ * for SPA catch-all detection. Returns { hash } or null on failure.
  */
 async function getRootFingerprint(baseUrl, timeout) {
-  const resp = await safeFetch(baseUrl, { method: 'GET', redirect: 'manual' }, timeout);
+  const resp = await safeFetch(baseUrl, { method: 'GET' }, timeout);
   if (!resp) return null;
   const ct = (resp.headers.get('content-type') || '').toLowerCase();
-  if (!ct.includes('text/html')) return null; // Non-HTML roots don't do SPA catch-all
+  if (!ct.includes('text/html')) return null;
   const text = await resp.text().catch(() => '');
   const hash = createHash('md5').update(text.slice(0, 4096)).digest('hex');
-  return { hash, contentType: ct };
+  return { hash };
 }
 
 /**
- * Returns true when a discovered endpoint looks like a SPA catch-all:
- *   - Responds with text/html, AND
- *   - The first 4 KB of body hashes identically to the root page, OR
- *   - The status is 200 but content-type is text/html for a path like /.env or /.git/config
- *     that should never serve HTML.
+ * Paths that should NEVER legitimately return HTML from an API or file server.
+ * When these return text/html with a body matching the root shell, they are
+ * SPA catch-all responses — not real endpoints.
  */
-function isSpaFallback(resp, bodyHash, rootFingerprint, path) {
+const NEVER_HTML_PATHS = new Set([
+  '/.env', '/.git/config', '/openapi.json', '/swagger.json',
+  '/sitemap.xml', '/robots.txt', '/health', '/status', '/version',
+  '/.well-known/security.txt'
+]);
+
+/**
+ * Returns true when an endpoint is a SPA catch-all false-positive.
+ * Requires ALL of:
+ *   1. Response is text/html
+ *   2. Path is in the NEVER_HTML_PATHS set
+ *   3. Body fingerprint matches the root page (same SPA shell)
+ */
+function isSpaFallback(ct, bodyHash, rootFingerprint, path) {
   if (!rootFingerprint) return false;
-  const ct = (resp.headers.get('content-type') || '').toLowerCase();
   if (!ct.includes('text/html')) return false;
-
-  // If body fingerprint matches root — it's the same catch-all page
-  if (bodyHash && bodyHash === rootFingerprint.hash) return true;
-
-  // Heuristic: paths that should NEVER serve HTML are almost certainly SPA fallbacks
-  const neverHtmlPaths = ['/.env', '/.git/config', '/openapi.json', '/swagger.json',
-    '/sitemap.xml', '/robots.txt', '/health', '/status', '/version'];
-  if (neverHtmlPaths.some((p) => path === p || path.startsWith(p + '?'))) return true;
-
-  return false;
+  if (!NEVER_HTML_PATHS.has(path)) return false;
+  return bodyHash === rootFingerprint.hash;
 }
 
 export async function discoverEndpoints(baseUrl, { concurrency, timeout }) {
   const found = [];
 
-  // Fingerprint root page once so we can detect SPA catch-all 200s
+  // Fingerprint root once (following redirects) for catch-all detection.
   const rootFingerprint = await getRootFingerprint(baseUrl, timeout);
 
   await pool(COMMON_PATHS, concurrency, async (path) => {
     const url = new URL(path, baseUrl).toString();
-    const resp = await safeFetch(url, { method: 'GET', redirect: 'manual' }, timeout);
+    // Follow redirects so we see the final response (not a Heroku HTTP→HTTPS 302).
+    const resp = await safeFetch(url, { method: 'GET' }, timeout);
     if (!resp || resp.status >= 400) return;
 
-    // Clone body for fingerprinting (body can only be consumed once)
+    const ct = (resp.headers.get('content-type') || '').toLowerCase();
     const text = await resp.text().catch(() => '');
     const bodyHash = createHash('md5').update(text.slice(0, 4096)).digest('hex');
 
-    if (isSpaFallback(resp, bodyHash, rootFingerprint, path)) return; // Filter SPA catch-all
+    if (isSpaFallback(ct, bodyHash, rootFingerprint, path)) return;
 
     found.push({ path, url, status: resp.status });
   });
@@ -76,11 +78,14 @@ export async function discoverEndpoints(baseUrl, { concurrency, timeout }) {
         .filter((p) => p && p !== '/' && !found.some((f) => f.path === p));
       await pool(paths.slice(0, 30), concurrency, async (path) => {
         const url = new URL(path, baseUrl).toString();
-        const r = await safeFetch(url, { method: 'GET', redirect: 'manual' }, timeout);
+        const r = await safeFetch(url, { method: 'GET' }, timeout);
         if (!r || r.status >= 400) return;
-        const t = await r.text().catch(() => '');
-        const bh = createHash('md5').update(t.slice(0, 4096)).digest('hex');
-        if (!isSpaFallback(r, bh, rootFingerprint, path)) found.push({ path, url, status: r.status });
+        const rct = (r.headers.get('content-type') || '').toLowerCase();
+        const rt = await r.text().catch(() => '');
+        const rh = createHash('md5').update(rt.slice(0, 4096)).digest('hex');
+        if (!isSpaFallback(rct, rh, rootFingerprint, path)) {
+          found.push({ path, url, status: r.status });
+        }
       });
     }
   }
